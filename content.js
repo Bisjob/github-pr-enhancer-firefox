@@ -76,8 +76,8 @@
 
     let reviewerSpan = inlineFlexContainer.querySelector(`.${SPAN_CLASS}`);
     if (!reviewerSpan) {
-      reviewerSpan = document.createElement("span");
-      reviewerSpan.className = `${SPAN_CLASS} issue-meta-section ml-1`;
+      reviewerSpan = document.createElement('span');
+      reviewerSpan.className = `${SPAN_CLASS} issue-meta-section`;
     }
     inlineFlexContainer.appendChild(reviewerSpan);
 
@@ -178,6 +178,115 @@
     );
   }
 
+  // Fetch deployments for a specific SHA
+  // API endpoints:
+  // - Deployments: GET /repos/{owner}/{repo}/deployments?sha={sha}
+  // - Deployment statuses: GET /repos/{owner}/{repo}/deployments/{deployment_id}/statuses
+  async function fetchDeployments(headSha) {
+    const deploymentsUrl = `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/deployments?sha=${headSha}&per_page=10`;
+
+    try {
+      const headers = await getApiHeaders();
+      const deploymentsResponse = await fetch(deploymentsUrl, { headers });
+
+      if (!deploymentsResponse.ok) {
+        return [];
+      }
+
+      const deployments = await deploymentsResponse.json();
+      if (!Array.isArray(deployments) || deployments.length === 0) {
+        return [];
+      }
+
+      // Fetch latest status for each deployment (in parallel)
+      const deploymentResults = await Promise.all(
+        deployments.map(async (deployment) => {
+          const statusUrl = `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/deployments/${deployment.id}/statuses?per_page=1`;
+          try {
+            const statusResponse = await fetch(statusUrl, { headers });
+            if (!statusResponse.ok) {
+              return null;
+            }
+            const statuses = await statusResponse.json();
+            const latestStatus = Array.isArray(statuses) && statuses.length > 0 ? statuses[0] : null;
+
+            const state = latestStatus ? latestStatus.state : 'pending';
+            return {
+              environment: deployment.environment,
+              state,
+              deployedAt: deployment.created_at,
+              // For inactive deployments, track when it was superseded
+              supersededAt: state === 'inactive' && latestStatus ? latestStatus.updated_at : null,
+            };
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      // Filter out nulls and deduplicate by environment (keep most recent)
+      const envMap = new Map();
+      for (const result of deploymentResults) {
+        if (result && !envMap.has(result.environment)) {
+          envMap.set(result.environment, result);
+        }
+      }
+
+      return Array.from(envMap.values());
+    } catch (error) {
+      console.error('[GitHub PR Enhancer] Deployments fetch error:', error);
+      return [];
+    }
+  }
+
+  // Abbreviate environment names for display
+  function abbreviateEnvName(name) {
+    const abbrevMap = {
+      'production': 'prod',
+      'staging': 'stg',
+      'development': 'dev',
+    };
+    const lower = name.toLowerCase();
+    return abbrevMap[lower] || (name.length > 10 ? name.substring(0, 8) + '…' : name);
+  }
+
+  // Format relative time for tooltip
+  function formatRelativeTime(dateString) {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return `${diffDays}d ago`;
+  }
+
+  // Format deployment badges HTML
+  function formatDeploymentBadges(deployments) {
+    if (!deployments || deployments.length === 0) {
+      return '';
+    }
+
+    const badges = deployments.map((deployment) => {
+      const abbrevName = abbreviateEnvName(deployment.environment);
+      const stateClass = `deployment-badge--${deployment.state}`;
+      let tooltip;
+      if (deployment.state === 'inactive' && deployment.supersededAt) {
+        tooltip = `${deployment.environment}: deployed ${formatRelativeTime(deployment.deployedAt)}, superseded ${formatRelativeTime(deployment.supersededAt)}`;
+      } else {
+        tooltip = `${deployment.environment}: ${deployment.state} (${formatRelativeTime(deployment.deployedAt)})`;
+      }
+
+      return `<span class="deployment-badge ${stateClass} tooltipped tooltipped-s" aria-label="${tooltip}">${abbrevName}</span>`;
+    });
+
+    return `<span class="reviewer-separator">•</span><span class="deployment-badges-container">${badges.join('')}</span>`;
+  }
+
   // Fetch reviewers from GitHub API
   // API endpoints:
   // - Pull request details: GET /repos/{owner}/{repo}/pulls/{prNumber}
@@ -202,6 +311,10 @@
       }
 
       const pullData = await pullResponse.json();
+      const headSha = pullData.head?.sha;
+
+      // Fetch deployments in parallel with processing reviewers
+      const deploymentsPromise = headSha ? fetchDeployments(headSha) : Promise.resolve([]);
 
       // Extract requested reviewers (excluding bots)
       const requestedUsers = Array.isArray(pullData.requested_reviewers)
@@ -268,7 +381,9 @@
         }
       }
 
-      return { reviewers };
+      const deployments = await deploymentsPromise;
+
+      return { reviewers, deployments };
     } catch (error) {
       return { error: error.message || "Unknown error" };
     }
@@ -300,7 +415,7 @@
     const promise = fetchReviewers(prNumber);
     rowPromises.set(row, promise);
 
-    promise.then(({ reviewers, error }) => {
+    promise.then(({ reviewers, deployments, error }) => {
       if (rowPromises.get(row) !== promise) {
         return;
       }
@@ -315,8 +430,9 @@
         return;
       }
 
-      setSpanText(infoSpan, formatReviewerAvatars(reviewers), false);
-      infoSpan.removeAttribute("title");
+      const deploymentBadgesHtml = formatDeploymentBadges(deployments);
+      setSpanText(infoSpan, deploymentBadgesHtml + formatReviewerAvatars(reviewers), false);
+      infoSpan.removeAttribute('title');
       rowReviewerData.set(row, reviewers);
       let barChanged = false;
       for (const r of reviewers) {
@@ -326,7 +442,7 @@
           barChanged = true;
         }
       }
-      if (barChanged) renderFilterBar();
+      renderFilterBar();
       if (activeFilter) filterRow(row);
     });
     promise.finally(() => {
@@ -383,6 +499,29 @@
     filterBar.className = "github-show-reviewer-filter pl-3";
     filterBar.style.display = "none";
     firstRow.parentNode.insertBefore(filterBar, firstRow);
+
+    filterBar.addEventListener('click', (e) => {
+      const el = e.target.closest('[aria-label]');
+      if (!el || !filterBar.contains(el)) return;
+      const ariaLabel = el.getAttribute('aria-label');
+      const isTeam = ariaLabel.startsWith('@');
+      const login = isTeam ? ariaLabel.substring(1) : ariaLabel;
+      toggleFilter(login, isTeam);
+    });
+
+    filterBar.addEventListener('mouseenter', (e) => {
+      const el = e.target.closest('[aria-label]');
+      if (!el || !filterBar.contains(el)) return;
+      const text = el.getAttribute('aria-label');
+      if (text) showTooltip(el, text);
+    }, true);
+
+    filterBar.addEventListener('mouseleave', (e) => {
+      const el = e.target.closest('[aria-label]');
+      if (!el || !filterBar.contains(el)) return;
+      hideTooltip();
+    }, true);
+
     return filterBar;
   }
 
@@ -446,8 +585,7 @@
     }
 
     bar.innerHTML = htmlContent;
-    bar.style.display = hasVisibleReviewers ? "flex" : "none";
-    setTimeout(setupTooltips, 100);
+    bar.style.display = hasVisibleReviewers ? 'flex' : 'none';
   }
 
   function toggleFilter(login, isTeam) {
@@ -586,7 +724,7 @@
 
     // Position tooltip above the element
     let top = rect.top - tooltipRect.height - 8;
-    let left = rect.left + rect.width / 2 - tooltipRect.width / 2;
+    let left = rect.left + (rect.width / 2) - (tooltipRect.width / 2);
 
     // Keep tooltip within viewport
     if (top < 0) {
@@ -608,33 +746,6 @@
       tooltip.classList.remove("visible");
     }
   }
+  
 
-  // Add tooltip and click event listeners to filter bar
-  function setupTooltips() {
-    const bar = ensureFilterBar();
-    if (!bar) return;
-
-    const elements = bar.querySelectorAll("[aria-label]");
-
-    elements.forEach((element) => {
-      const ariaLabel = element.getAttribute("aria-label");
-
-      // Setup tooltips
-      element.addEventListener("mouseenter", (e) => {
-        const text = e.target.getAttribute("aria-label");
-        if (text) {
-          showTooltip(e.target, text);
-        }
-      });
-
-      element.addEventListener("mouseleave", hideTooltip);
-
-      // Setup click handlers
-      element.addEventListener("click", () => {
-        const isTeam = ariaLabel.startsWith("@");
-        const login = isTeam ? ariaLabel.substring(1) : ariaLabel;
-        toggleFilter(login, isTeam);
-      });
-    });
-  }
 })();
