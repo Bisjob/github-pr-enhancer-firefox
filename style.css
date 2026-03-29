@@ -204,9 +204,9 @@
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.1s ease;
-  max-width: 250px;
+  max-width: 400px;
   word-wrap: break-word;
-  white-space: normal;
+  white-space: pre-wrap;
 }
 
 .github-show-reviewer-tooltip.visible {
@@ -281,4 +281,113 @@
   background: var(--bgColor-muted, #f6f8fa);
   color: var(--fgColor-muted, #656d76);
   border: 1px solid var(--borderColor-default, #d0d7de);
+}
+
+/* Status summary tags (review approval + CI) */
+.pr-status-tags-container {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: middle;
+}
+
+.pr-status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: default;
+  transition: transform 0.15s, opacity 0.15s;
+  line-height: 18px;
+}
+
+.pr-status-tag:hover {
+  transform: scale(1.05);
+}
+
+.pr-status--approved {
+  background: var(--bgColor-success-muted, #dafbe1);
+  color: var(--fgColor-success, #1a7f37);
+  border: 1px solid var(--borderColor-success-muted, #aceebb);
+}
+
+.pr-status--changes {
+  background: var(--bgColor-danger-muted, #ffebe9);
+  color: var(--fgColor-danger, #cf222e);
+  border: 1px solid var(--borderColor-danger-muted, #ffcecb);
+}
+
+.pr-status--review-pending {
+  background: var(--bgColor-attention-muted, #fff8c5);
+  color: var(--fgColor-attention, #9a6700);
+  border: 1px solid var(--borderColor-attention-muted, #f0db66);
+}
+
+.pr-status--ci-success {
+  background: var(--bgColor-success-muted, #dafbe1);
+  color: var(--fgColor-success, #1a7f37);
+  border: 1px solid var(--borderColor-success-muted, #aceebb);
+  opacity: 0.85;
+}
+
+.pr-status--ci-failure {
+  background: var(--bgColor-danger-muted, #ffebe9);
+  color: var(--fgColor-danger, #cf222e);
+  border: 1px solid var(--borderColor-danger-muted, #ffcecb);
+}
+
+.pr-status--ci-pending {
+  background: var(--bgColor-accent-muted, #ddf4ff);
+  color: var(--fgColor-accent, #0969da);
+  border: 1px solid var(--borderColor-accent-muted, #54aeff66);
+  animation: ci-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes ci-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+/* Date info badges (last commit & my review) */
+.pr-date-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: default;
+  vertical-align: middle;
+  background: var(--bgColor-muted, #f6f8fa);
+  border: 1px solid var(--borderColor-default, #d0d7de);
+  color: var(--fgColor-muted, #656d76);
+  transition: transform 0.15s;
+}
+
+.pr-date-badge:hover {
+  transform: scale(1.05);
+}
+
+.pr-date-badge svg {
+  flex-shrink: 0;
+  fill: currentColor;
+  opacity: 0.75;
+}
+
+.pr-review-date--approved {
+  background: var(--bgColor-success-muted, #dafbe1);
+  color: var(--fgColor-success, #1a7f37);
+  border-color: var(--borderColor-success-muted, #aceebb);
+}
+
+.pr-review-date--changes {
+  background: var(--bgColor-attention-muted, #fff8c5);
+  color: var(--fgColor-attention, #9a6700);
+  border-color: var(--borderColor-attention-muted, #f0db66);
 }
