@@ -46,9 +46,29 @@
   let currentUrl = window.location.href;
   let observer = null;
   let rowReviewerData = new WeakMap();
+  // Cached data per row for re-rendering without repeating API calls
+  let rowFullData = new WeakMap();
   let allReviewers = new Map();
   let activeFilter = null;
   let filterBar = null;
+
+  // Display toggles (kept in sync with storage)
+  const TOGGLE_DEFAULTS = {
+    showStatusTags: true,
+    showReviewers: true,
+    showDates: true,
+    showDeployments: true,
+    showFilterBar: true,
+  };
+  let displayToggles = { ...TOGGLE_DEFAULTS };
+
+  async function loadDisplayToggles() {
+    try {
+      const result = await browser.storage.sync.get(['displayToggles']);
+      displayToggles = { ...TOGGLE_DEFAULTS, ...(result.displayToggles || {}) };
+    } catch { /* use defaults */ }
+  }
+  loadDisplayToggles();
   const TEAM_ICON = `<svg aria-hidden="true" height="16" viewBox="0 0 16 16" width="16" class="octicon octicon-people">
     <path d="M2 5.5a3.5 3.5 0 1 1 5.898 2.549 5.508 5.508 0 0 1 3.034 4.084.75.75 0 1 1-1.482.235 4 4 0 0 0-7.9 0 .75.75 0 0 1-1.482-.236A5.507 5.507 0 0 1 3.102 8.05 3.493 3.493 0 0 1 2 5.5ZM11 4a3.001 3.001 0 0 1 2.22 5.018 5.01 5.01 0 0 1 2.56 3.012.749.749 0 0 1-.885.954.752.752 0 0 1-.549-.514 3.507 3.507 0 0 0-2.522-2.372.75.75 0 0 1-.574-.73v-.352a.75.75 0 0 1 .416-.672A1.5 1.5 0 0 0 11 5.5.75.75 0 0 1 11 4Zm-5.5-.5a2 2 0 1 0-.001 3.999A2 2 0 0 0 5.5 3.5Z"></path>
   </svg>`;
@@ -60,7 +80,8 @@
     return document.querySelector('meta[name="user-login"]')?.getAttribute('content') || null;
   }
 
-  // Get GitHub API headers (includes token if available)
+  // Get GitHub API headers, picking the most specific token available.
+  // Priority: per-owner token > default token > no auth.
   async function getApiHeaders() {
     const headers = {
       Accept: "application/vnd.github+json",
@@ -68,9 +89,15 @@
     };
 
     try {
-      const result = await browser.storage.sync.get(["githubToken"]);
-      if (result.githubToken) {
-        headers.Authorization = `Bearer ${result.githubToken}`;
+      const result = await browser.storage.sync.get(["githubToken", "ownerTokens"]);
+
+      // Resolve the owner from the current repo context (may be null on non-PR pages)
+      const owner = repoInfo?.owner || null;
+      const ownerToken = owner && result.ownerTokens?.[owner];
+      const token = ownerToken || result.githubToken || null;
+
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
       }
     } catch (error) {
       console.error(
@@ -744,12 +771,14 @@
         return;
       }
 
-      const statusTagsHtml = formatStatusTags(reviewStatus, ciStatus);
-      const datesInfoHtml = formatDatesInfo(lastCommitDate, myLastReview);
-      const deploymentBadgesHtml = formatDeploymentBadges(deployments);
-      setSpanText(infoSpan, statusTagsHtml + datesInfoHtml + deploymentBadgesHtml + formatReviewerAvatars(reviewers), false);
+      const statusTagsHtml = displayToggles.showStatusTags ? formatStatusTags(reviewStatus, ciStatus) : '';
+      const datesInfoHtml = displayToggles.showDates ? formatDatesInfo(lastCommitDate, myLastReview) : '';
+      const deploymentBadgesHtml = displayToggles.showDeployments ? formatDeploymentBadges(deployments) : '';
+      const reviewersHtml = displayToggles.showReviewers ? formatReviewerAvatars(reviewers) : '';
+      setSpanText(infoSpan, statusTagsHtml + datesInfoHtml + deploymentBadgesHtml + reviewersHtml, false);
       infoSpan.removeAttribute('title');
       rowReviewerData.set(row, reviewers);
+      rowFullData.set(row, { reviewers, deployments, lastCommitDate, myLastReview, reviewStatus, ciStatus });
       let barChanged = false;
       for (const r of reviewers) {
         const key = r.isTeam ? `@${r.login}` : r.login;
@@ -901,7 +930,7 @@
     }
 
     bar.innerHTML = htmlContent;
-    bar.style.display = hasVisibleReviewers ? 'flex' : 'none';
+    bar.style.display = (hasVisibleReviewers && displayToggles.showFilterBar) ? 'flex' : 'none';
   }
 
   function toggleFilter(login, isTeam) {
@@ -950,6 +979,7 @@
       repoInfo.repo !== newRepoInfo.repo;
     if (switchedRepo) {
       rowPromises = new WeakMap();
+      rowFullData = new WeakMap();
       allReviewers.clear();
       activeFilter = null;
       applyFilter();
@@ -1018,6 +1048,29 @@
   });
 
   initializeExtension();
+
+  // Re-render all rows immediately when display toggles change in storage
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'sync' || !changes.displayToggles) return;
+    displayToggles = { ...TOGGLE_DEFAULTS, ...(changes.displayToggles.newValue || {}) };
+
+    // Re-render all rows that already have fetched data
+    document.querySelectorAll(ROW_SELECTOR).forEach((row) => {
+      const data = rowFullData.get(row);
+      if (!data) return;
+      const infoSpan = ensureInfoSpan(row);
+      if (!infoSpan) return;
+      const { reviewers, deployments, lastCommitDate, myLastReview, reviewStatus, ciStatus } = data;
+      const statusTagsHtml = displayToggles.showStatusTags ? formatStatusTags(reviewStatus, ciStatus) : '';
+      const datesInfoHtml = displayToggles.showDates ? formatDatesInfo(lastCommitDate, myLastReview) : '';
+      const deploymentBadgesHtml = displayToggles.showDeployments ? formatDeploymentBadges(deployments) : '';
+      const reviewersHtml = displayToggles.showReviewers ? formatReviewerAvatars(reviewers) : '';
+      setSpanText(infoSpan, statusTagsHtml + datesInfoHtml + deploymentBadgesHtml + reviewersHtml, false);
+    });
+
+    // Re-render filter bar (handles showFilterBar toggle)
+    renderFilterBar();
+  });
 
   // Custom tooltip system
   let tooltip = null;

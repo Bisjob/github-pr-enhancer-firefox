@@ -5,6 +5,7 @@
   "description": "Display reviewers in GitHub PR list view, and allow filtering by pending reviews.",
   "permissions": [
     "storage",
+    "tabs",
     "https://github.com/*",
     "https://api.github.com/*",
     "https://*.ghe.com/*"
@@ -19,6 +20,13 @@
       "css": ["style.css"]
     }
   ],
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "128": "icons/icon.png"
+    },
+    "default_title": "GitHub PR Enhancer"
+  },
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true
