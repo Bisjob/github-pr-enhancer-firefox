@@ -221,7 +221,12 @@
 
   // Update span element content with optional eye icon and error styling
   function setSpanText(span, text, isError = false) {
-    span.innerHTML = text;
+    const doc = new DOMParser().parseFromString(text, 'text/html');
+    const fragment = document.createDocumentFragment();
+    while (doc.body.firstChild) {
+      fragment.appendChild(document.adoptNode(doc.body.firstChild));
+    }
+    span.replaceChildren(fragment);
     span.classList.toggle(`${SPAN_CLASS}--success`, !isError);
     span.classList.toggle(`${SPAN_CLASS}--error`, isError);
   }
@@ -899,8 +904,12 @@
       a.login.localeCompare(b.login, undefined, { sensitivity: "base" }),
     );
 
-    let htmlContent =
-      '<span class="reviewer-filter-label">Pending reviews by:</span>';
+    const fragment = document.createDocumentFragment();
+    const label = document.createElement('span');
+    label.className = 'reviewer-filter-label';
+    label.textContent = 'Pending reviews by:';
+    fragment.appendChild(label);
+
     let hasVisibleReviewers = false;
 
     for (const reviewer of sorted) {
@@ -915,21 +924,28 @@
         activeFilter.login === reviewer.login &&
         activeFilter.isTeam === reviewer.isTeam;
 
+      const btn = document.createElement('button');
       if (reviewer.isTeam) {
-        htmlContent += `<button class="reviewer-filter-team tooltipped tooltipped-s${isActive ? " reviewer-filter-team--active" : ""}" aria-label="@${reviewer.login}">
-          ${TEAM_ICON}
-        </button>`;
+        btn.className = `reviewer-filter-team tooltipped tooltipped-s${isActive ? ' reviewer-filter-team--active' : ''}`;
+        btn.setAttribute('aria-label', `@${reviewer.login}`);
+        const svgDoc = new DOMParser().parseFromString(TEAM_ICON, 'image/svg+xml');
+        btn.appendChild(document.adoptNode(svgDoc.documentElement));
       } else {
         const avatarUrl =
           reviewer.avatarUrl ||
           `${getWebBaseUrl()}/${reviewer.login}.png?size=40`;
-        htmlContent += `<button class="reviewer-filter-avatar tooltipped tooltipped-s${isActive ? " reviewer-filter-avatar--active" : ""}" aria-label="${reviewer.login}">
-          <img src="${avatarUrl}" alt="${reviewer.login}" loading="lazy">
-        </button>`;
+        btn.className = `reviewer-filter-avatar tooltipped tooltipped-s${isActive ? ' reviewer-filter-avatar--active' : ''}`;
+        btn.setAttribute('aria-label', reviewer.login);
+        const img = document.createElement('img');
+        img.src = avatarUrl;
+        img.alt = reviewer.login;
+        img.loading = 'lazy';
+        btn.appendChild(img);
       }
+      fragment.appendChild(btn);
     }
 
-    bar.innerHTML = htmlContent;
+    bar.replaceChildren(fragment);
     bar.style.display = (hasVisibleReviewers && displayToggles.showFilterBar) ? 'flex' : 'none';
   }
 
