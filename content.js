@@ -520,31 +520,76 @@
     return `<span class="reviewer-separator">•</span><span class="pr-status-tags-container">${html}</span>`;
   }
 
-  // Format last commit date and current user's last review as compact badges
-  function formatDatesInfo(lastCommitDate, myLastReview) {
-    let html = '';
+  // Format a single combined commit & review date badge.
+  // Single combined date badge:
+  // - Author view: show latest reviewer activity (or commit date if no reviews yet).
+  // - Reviewer view: show own review status, or stale warning if new commits exist.
+  // - Fallback: show last commit date.
+  function formatDatesInfo(lastCommitDate, myLastReview, isAuthor, latestReviewDate) {
+    if (!lastCommitDate && !myLastReview && !latestReviewDate) return '';
 
-    if (lastCommitDate) {
-      const relTime = formatRelativeTime(lastCommitDate);
-      const fullDate = new Date(lastCommitDate).toLocaleString();
-      html += `<span class="reviewer-separator">•</span><span class="pr-date-badge pr-commit-date tooltipped tooltipped-s" aria-label="Last commit: ${fullDate}">${COMMIT_ICON}${relTime}</span>`;
+    let icon, relTime, badgeClass, tooltip;
+
+    if (isAuthor) {
+      // Author's perspective: show latest review from others
+      if (latestReviewDate) {
+        relTime = formatRelativeTime(latestReviewDate.date);
+        icon = EYE_ICON;
+        const stateLabel =
+          latestReviewDate.state === 'APPROVED' ? 'Approved'
+          : latestReviewDate.state === 'CHANGES_REQUESTED' ? 'Changes requested'
+          : 'Reviewed';
+        badgeClass =
+          latestReviewDate.state === 'APPROVED' ? 'pr-review-date--approved'
+          : latestReviewDate.state === 'CHANGES_REQUESTED' ? 'pr-review-date--changes'
+          : 'pr-review-date';
+        tooltip = `Latest review: ${latestReviewDate.login} — ${stateLabel} (${new Date(latestReviewDate.date).toLocaleString()})`;
+      } else if (lastCommitDate) {
+        // No reviews yet — show commit date
+        relTime = formatRelativeTime(lastCommitDate);
+        icon = COMMIT_ICON;
+        badgeClass = 'pr-commit-date';
+        tooltip = `Last commit: ${new Date(lastCommitDate).toLocaleString()}`;
+      } else {
+        return '';
+      }
+    } else {
+      // Reviewer's perspective
+      const hasNewCommits = lastCommitDate && myLastReview
+        && new Date(lastCommitDate) > new Date(myLastReview.date);
+
+      if (!myLastReview) {
+        if (!lastCommitDate) return '';
+        // No review yet — show commit date only
+        relTime = formatRelativeTime(lastCommitDate);
+        icon = COMMIT_ICON;
+        badgeClass = 'pr-commit-date';
+        tooltip = `Last commit: ${new Date(lastCommitDate).toLocaleString()}`;
+      } else if (hasNewCommits) {
+        // Commits landed after review — stale, show commit date
+        relTime = formatRelativeTime(lastCommitDate);
+        icon = COMMIT_ICON;
+        badgeClass = 'pr-date-badge--stale';
+        const commitFull = new Date(lastCommitDate).toLocaleString();
+        const reviewFull = new Date(myLastReview.date).toLocaleString();
+        tooltip = `New commits since your review\nLast commit: ${commitFull}\nYour review: ${reviewFull}`;
+      } else {
+        // Reviewed, no new commits — show review date
+        relTime = formatRelativeTime(myLastReview.date);
+        icon = EYE_ICON;
+        const stateLabel =
+          myLastReview.state === 'APPROVED' ? 'Approved'
+          : myLastReview.state === 'CHANGES_REQUESTED' ? 'Changes requested'
+          : 'Reviewed';
+        badgeClass =
+          myLastReview.state === 'APPROVED' ? 'pr-review-date--approved'
+          : myLastReview.state === 'CHANGES_REQUESTED' ? 'pr-review-date--changes'
+          : 'pr-review-date';
+        tooltip = `My review: ${stateLabel} (${new Date(myLastReview.date).toLocaleString()})`;
+      }
     }
 
-    if (myLastReview) {
-      const relTime = formatRelativeTime(myLastReview.date);
-      const fullDate = new Date(myLastReview.date).toLocaleString();
-      const stateLabel =
-        myLastReview.state === 'APPROVED' ? 'Approved'
-        : myLastReview.state === 'CHANGES_REQUESTED' ? 'Changes requested'
-        : 'Reviewed';
-      const stateClass =
-        myLastReview.state === 'APPROVED' ? ' pr-review-date--approved'
-        : myLastReview.state === 'CHANGES_REQUESTED' ? ' pr-review-date--changes'
-        : '';
-      html += `<span class="reviewer-separator">•</span><span class="pr-date-badge pr-review-date${stateClass} tooltipped tooltipped-s" aria-label="My review: ${stateLabel} (${fullDate})">${EYE_ICON}${relTime}</span>`;
-    }
-
-    return html;
+    return `<span class="reviewer-separator">•</span><span class="pr-date-badge ${badgeClass} tooltipped tooltipped-s" aria-label="${tooltip}">${icon}${relTime}</span>`;
   }
 
   // Format deployment badges HTML
@@ -630,6 +675,7 @@
 
       // Find the current authenticated user's most recent review
       const currentUserLogin = getCurrentUserLogin();
+      const isAuthor = currentUserLogin && pullData.user?.login === currentUserLogin;
       let myLastReview = null;
       if (currentUserLogin && Array.isArray(reviews)) {
         const myReviews = reviews.filter((r) =>
@@ -643,6 +689,24 @@
           myReviews.sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at));
           const latest = myReviews[0];
           myLastReview = { date: latest.submitted_at, state: latest.state.toUpperCase() };
+        }
+      }
+
+      // For the PR author: find the most recent review from anyone else
+      let latestReviewDate = null;
+      if (isAuthor && Array.isArray(reviews)) {
+        const othersReviews = reviews.filter((r) =>
+          r &&
+          r.user?.login !== currentUserLogin &&
+          r.state &&
+          r.state.toUpperCase() !== 'PENDING' &&
+          r.submitted_at &&
+          !isBot(r.user?.login),
+        );
+        if (othersReviews.length > 0) {
+          othersReviews.sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at));
+          const latest = othersReviews[0];
+          latestReviewDate = { date: latest.submitted_at, login: latest.user.login, state: latest.state.toUpperCase() };
         }
       }
 
@@ -729,7 +793,7 @@
         })),
       };
 
-      return { reviewers, deployments, lastCommitDate, myLastReview, reviewStatus, ciStatus };
+      return { reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus };
     } catch (error) {
       return { error: error.message || "Unknown error" };
     }
@@ -761,7 +825,7 @@
     const promise = fetchReviewers(prNumber);
     rowPromises.set(row, promise);
 
-    promise.then(({ reviewers, deployments, lastCommitDate, myLastReview, reviewStatus, ciStatus, error }) => {
+    promise.then(({ reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus, error }) => {
       if (rowPromises.get(row) !== promise) {
         return;
       }
@@ -777,13 +841,13 @@
       }
 
       const statusTagsHtml = displayToggles.showStatusTags ? formatStatusTags(reviewStatus, ciStatus) : '';
-      const datesInfoHtml = displayToggles.showDates ? formatDatesInfo(lastCommitDate, myLastReview) : '';
+      const datesInfoHtml = displayToggles.showDates ? formatDatesInfo(lastCommitDate, myLastReview, isAuthor, latestReviewDate) : '';
       const deploymentBadgesHtml = displayToggles.showDeployments ? formatDeploymentBadges(deployments) : '';
       const reviewersHtml = displayToggles.showReviewers ? formatReviewerAvatars(reviewers) : '';
       setSpanText(infoSpan, statusTagsHtml + datesInfoHtml + deploymentBadgesHtml + reviewersHtml, false);
       infoSpan.removeAttribute('title');
       rowReviewerData.set(row, reviewers);
-      rowFullData.set(row, { reviewers, deployments, lastCommitDate, myLastReview, reviewStatus, ciStatus });
+      rowFullData.set(row, { reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus });
       let barChanged = false;
       for (const r of reviewers) {
         const key = r.isTeam ? `@${r.login}` : r.login;
@@ -1076,9 +1140,9 @@
       if (!data) return;
       const infoSpan = ensureInfoSpan(row);
       if (!infoSpan) return;
-      const { reviewers, deployments, lastCommitDate, myLastReview, reviewStatus, ciStatus } = data;
+      const { reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus } = data;
       const statusTagsHtml = displayToggles.showStatusTags ? formatStatusTags(reviewStatus, ciStatus) : '';
-      const datesInfoHtml = displayToggles.showDates ? formatDatesInfo(lastCommitDate, myLastReview) : '';
+      const datesInfoHtml = displayToggles.showDates ? formatDatesInfo(lastCommitDate, myLastReview, isAuthor, latestReviewDate) : '';
       const deploymentBadgesHtml = displayToggles.showDeployments ? formatDeploymentBadges(deployments) : '';
       const reviewersHtml = displayToggles.showReviewers ? formatReviewerAvatars(reviewers) : '';
       setSpanText(infoSpan, statusTagsHtml + datesInfoHtml + deploymentBadgesHtml + reviewersHtml, false);

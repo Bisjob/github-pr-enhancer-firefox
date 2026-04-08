@@ -391,3 +391,10 @@
   color: var(--fgColor-attention, #9a6700);
   border-color: var(--borderColor-attention-muted, #f0db66);
 }
+
+/* Stale review: new commits exist after the user's last review */
+.pr-date-badge--stale {
+  background: var(--bgColor-danger-muted, #ffebe9);
+  color: var(--fgColor-danger, #d1242f);
+  border-color: var(--borderColor-danger-muted, #ffcecb);
+}

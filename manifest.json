@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "GitHub & GHE PR Enhancer",
-  "version": "2.0.1",
+  "version": "2.0.5",
   "description": "Display reviewers in GitHub PR list view, and allow filtering by pending reviews.",
   "permissions": [
     "storage",
