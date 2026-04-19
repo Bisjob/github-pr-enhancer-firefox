@@ -1,20 +1,32 @@
 {
   "manifest_version": 2,
-  "name": "GitHub PR Enhancer",
-  "version": "2.0.0",
+  "name": "GitHub & GHE PR Enhancer",
+  "version": "2.0.5",
   "description": "Display reviewers in GitHub PR list view, and allow filtering by pending reviews.",
   "permissions": [
     "storage",
+    "tabs",
     "https://github.com/*",
-    "https://api.github.com/*"
+    "https://api.github.com/*",
+    "https://*.ghe.com/*"
   ],
   "content_scripts": [
     {
-      "matches": ["https://github.com/*/*"],
+      "matches": [
+        "https://github.com/*",
+        "https://*.ghe.com/*"
+      ],
       "js": ["content.js"],
       "css": ["style.css"]
     }
   ],
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "128": "icons/icon.png"
+    },
+    "default_title": "GitHub PR Enhancer"
+  },
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true
@@ -27,8 +39,8 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "github-pr-enhancer@example.com",
-      "strict_min_version": "140.0",
+      "id": "ghe-pr-enhancer@example.com",
+      "strict_min_version": "142.0",
       "data_collection_permissions": {
         "required": ["none"]
       }

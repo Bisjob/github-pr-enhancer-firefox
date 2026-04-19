@@ -28,7 +28,7 @@ A Firefox extension that displays reviewers directly in the GitHub Pull Request 
 ## Installation
 
 **For Developers:**
-1. Package the extension: `zip -r github-pr-enhancer.xpi *` (from extension directory)
+1. Package the extension: `web-ext --config=web-ext.config.mjs build --overwrite-dest` (from extension directory)
 2. upload to addons.mozilla.org
 
 **For users:**

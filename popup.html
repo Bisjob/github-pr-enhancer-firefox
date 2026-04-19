@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>GitHub PR Enhancer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      font-size: 13px;
+      width: 280px;
+      background: #ffffff;
+      color: #24292f;
+    }
+
+    /* ── Header ───────────────────────────────────────────────── */
+    .header {
+      background: #24292f;
+      color: #f0f6fc;
+      padding: 12px 14px 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .header img { width: 20px; height: 20px; border-radius: 3px; }
+    .header-title { font-weight: 600; font-size: 14px; flex: 1; }
+    .header-settings {
+      background: none;
+      border: 1px solid rgba(240,246,252,0.3);
+      color: #f0f6fc;
+      border-radius: 5px;
+      padding: 3px 7px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .header-settings:hover { background: rgba(255,255,255,0.1); }
+
+    /* ── Context section ──────────────────────────────────────── */
+    .context-section {
+      padding: 10px 14px;
+      border-bottom: 1px solid #d0d7de;
+      background: #f6f8fa;
+    }
+
+    .context-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #57606a;
+      line-height: 1.6;
+    }
+    .context-row + .context-row { margin-top: 2px; }
+
+    .context-label { font-weight: 600; color: #24292f; min-width: 48px; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 7px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge-green  { background: #dafbe1; color: #1a7f37; border: 1px solid #aceebb; }
+    .badge-blue   { background: #ddf4ff; color: #0550ae; border: 1px solid #54aeff66; }
+    .badge-gray   { background: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; }
+    .badge-orange { background: #fff8c5; color: #9a6700; border: 1px solid #f0db66; }
+
+    .not-pr-page {
+      font-size: 12px;
+      color: #57606a;
+      font-style: italic;
+    }
+
+    /* ── Toggle section ───────────────────────────────────────── */
+    .toggle-section { padding: 10px 14px 12px; }
+
+    .section-heading {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #57606a;
+      margin-bottom: 8px;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 5px 0;
+      border-bottom: 1px solid #f6f8fa;
+    }
+    .toggle-row:last-child { border-bottom: none; }
+
+    .toggle-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: #24292f;
+    }
+    .toggle-icon { font-size: 14px; width: 18px; text-align: center; }
+
+    /* ── Toggle switch ────────────────────────────────────────── */
+    .switch {
+      position: relative;
+      width: 36px;
+      height: 20px;
+      flex-shrink: 0;
+    }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute;
+      inset: 0;
+      background: #d0d7de;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .slider::before {
+      content: '';
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: white;
+      left: 3px;
+      top: 3px;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    }
+    input:checked + .slider { background: #2da44e; }
+    input:checked + .slider::before { transform: translateX(16px); }
+
+    /* ── Footer ───────────────────────────────────────────────── */
+    .footer {
+      border-top: 1px solid #d0d7de;
+      padding: 8px 14px;
+      display: flex;
+      justify-content: flex-end;
+    }
+    .footer a {
+      font-size: 11px;
+      color: #57606a;
+      text-decoration: none;
+    }
+    .footer a:hover { color: #0969da; text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="icons/icon.png" alt="">
+    <span class="header-title">GitHub PR Enhancer</span>
+    <button class="header-settings" id="openSettings" title="Open settings">⚙ Settings</button>
+  </div>
+
+  <!-- Current page context -->
+  <div class="context-section" id="contextSection">
+    <div class="not-pr-page" id="notPrPage" style="display:none">
+      Not on a GitHub PR list page.
+    </div>
+    <div id="prPageContext" style="display:none">
+      <div class="context-row">
+        <span class="context-label">Owner</span>
+        <span id="ctxOwner" class="badge badge-blue"></span>
+      </div>
+      <div class="context-row">
+        <span class="context-label">Repo</span>
+        <span id="ctxRepo" class="badge badge-gray"></span>
+      </div>
+      <div class="context-row">
+        <span class="context-label">Token</span>
+        <span id="ctxToken" class="badge"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Feature toggles -->
+  <div class="toggle-section">
+    <div class="section-heading">Display features</div>
+
+    <div class="toggle-row">
+      <span class="toggle-label"><span class="toggle-icon">✓</span> Status tags (review &amp; CI)</span>
+      <label class="switch">
+        <input type="checkbox" id="toggleStatusTags" data-key="showStatusTags">
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="toggle-row">
+      <span class="toggle-label"><span class="toggle-icon">👤</span> Reviewer avatars</span>
+      <label class="switch">
+        <input type="checkbox" id="toggleReviewers" data-key="showReviewers">
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="toggle-row">
+      <span class="toggle-label"><span class="toggle-icon">🕐</span> Commit &amp; review dates</span>
+      <label class="switch">
+        <input type="checkbox" id="toggleDates" data-key="showDates">
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="toggle-row">
+      <span class="toggle-label"><span class="toggle-icon">🚀</span> Deployment badges</span>
+      <label class="switch">
+        <input type="checkbox" id="toggleDeployments" data-key="showDeployments">
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <div class="toggle-row">
+      <span class="toggle-label"><span class="toggle-icon">🔽</span> Pending review filter bar</span>
+      <label class="switch">
+        <input type="checkbox" id="toggleFilterBar" data-key="showFilterBar">
+        <span class="slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="footer">
+    <a href="#" id="openSettings2">Open full settings page</a>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
