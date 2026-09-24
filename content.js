@@ -12,6 +12,18 @@
     throw new Error(`Unsupported host for API access: ${hostname}`);
   }
 
+  // GraphQL endpoint (needed for review thread resolution status, which REST does not expose)
+  function getGraphqlUrl() {
+    const hostname = window.location.hostname;
+    if (hostname === "github.com" || hostname.endsWith(".github.com")) {
+      return "https://api.github.com/graphql";
+    }
+    if (hostname.endsWith(".ghe.com")) {
+      return `${window.location.protocol}//${hostname}/api/graphql`;
+    }
+    throw new Error(`Unsupported host for GraphQL access: ${hostname}`);
+  }
+
   function isAllowedHost() {
     const hostname = window.location.hostname;
     return (
@@ -41,7 +53,11 @@
 
   let repoInfo = checkAndGetRepoInfo();
   let rowPromises = new WeakMap();
-  const ROW_SELECTOR = ".js-issue-row";
+  // The React list view (GHE 3.18+/github.com) uses hashed CSS-module class
+  // names, so anchor on the stable data attributes instead. The legacy
+  // ".js-issue-row" markup is kept for older GHE releases.
+  const ROW_SELECTOR =
+    '[data-listview-component="items-list"] > li, .js-issue-row';
   const SPAN_CLASS = "github-show-reviewer";
   let currentUrl = window.location.href;
   let observer = null;
@@ -59,6 +75,8 @@
     showDates: true,
     showDeployments: true,
     showFilterBar: true,
+    showComments: true,
+    showConflicts: true,
   };
   let displayToggles = { ...TOGGLE_DEFAULTS };
 
@@ -74,10 +92,35 @@
   </svg>`;
   const COMMIT_ICON = `<svg aria-hidden="true" height="12" viewBox="0 0 16 16" width="12" class="octicon octicon-git-commit"><path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"></path></svg>`;
   const EYE_ICON = `<svg aria-hidden="true" height="12" viewBox="0 0 16 16" width="12" class="octicon octicon-eye"><path d="M8 2c1.981 0 3.671.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.45.678-1.367 1.932-2.637 3.023C11.67 13.008 9.981 14 8 14c-1.981 0-3.671-.992-4.933-2.078C1.797 10.83.88 9.576.43 8.898a1.62 1.62 0 0 1 0-1.798c.45-.677 1.367-1.931 2.637-3.022C4.33 2.992 6.019 2 8 2ZM1.679 7.932a.12.12 0 0 0 0 .136c.411.622 1.241 1.75 2.366 2.717C5.176 11.758 6.527 12.5 8 12.5c1.473 0 2.825-.742 3.955-1.715 1.124-.967 1.954-2.096 2.366-2.717a.12.12 0 0 0 0-.136c-.412-.621-1.242-1.75-2.366-2.717C10.824 4.242 9.473 3.5 8 3.5c-1.473 0-2.825.742-3.955 1.715-1.124.967-1.954 2.096-2.366 2.717ZM8 10a2 2 0 1 1-.001-3.999A2 2 0 0 1 8 10Z"></path></svg>`;
+  const COMMENT_ICON = `<svg aria-hidden="true" height="12" viewBox="0 0 16 16" width="12" class="octicon octicon-comment-discussion"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"></path></svg>`;
+  const MERGE_ICON = `<svg aria-hidden="true" height="12" viewBox="0 0 16 16" width="12" class="octicon octicon-git-merge"><path d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 3.25a.75.75 0 1 0 0 .005V3.25Z"></path></svg>`;
   let initializationTimeout = null;
 
+  // Toggle from the page console with:
+  //   localStorage.ghPrEnhancerDebug = "1"   (then reload)
+  const DEBUG = (() => {
+    try {
+      return localStorage.getItem("ghPrEnhancerDebug") === "1";
+    } catch (error) {
+      return false;
+    }
+  })();
+
+  function log(...args) {
+    if (DEBUG) {
+      console.log("[GitHub PR Enhancer]", ...args);
+    }
+  }
+
   function getCurrentUserLogin() {
-    return document.querySelector('meta[name="user-login"]')?.getAttribute('content') || null;
+    const login =
+      document.querySelector('meta[name="user-login"]')?.getAttribute('content') ||
+      document.querySelector('meta[name="octolytics-actor-login"]')?.getAttribute('content') ||
+      null;
+    if (!login) {
+      log("current user login not found in page meta tags");
+    }
+    return login;
   }
 
   // Get GitHub API headers, picking the most specific token available.
@@ -111,10 +154,27 @@
 
   // Create and return span element for displaying reviewer info in PR row
   function ensureInfoSpan(row) {
+    // React list view: append to the metadata line holding "#1234 · author
+    // opened <date> · Review required · checks".
+    const description =
+      row.querySelector('[data-testid="timestamp-container"]')?.parentElement ||
+      row.querySelector('[class*="Description-module__container"]');
+    if (description) {
+      let span = description.querySelector(`.${SPAN_CLASS}`);
+      if (!span) {
+        span = document.createElement("span");
+        span.className = `${SPAN_CLASS} issue-meta-section`;
+        description.appendChild(span);
+      }
+      return span;
+    }
+
+    // Legacy markup
     const metaContainer = row.querySelector(
       ".d-flex.mt-1.text-small.color-fg-muted",
     );
     if (!metaContainer) {
+      log("no metadata container found in row", row);
       return null;
     }
 
@@ -159,8 +219,11 @@
       }
     }
 
-    // Fallback: extract from PR link
-    const link = row.querySelector('a.Link--primary[href*="/pull/"]');
+    // Fallback: extract from the PR title link
+    const link =
+      row.querySelector('a[data-testid="listitem-title-link"]') ||
+      row.querySelector('a.Link--primary[href*="/pull/"]') ||
+      row.querySelector('a[href*="/pull/"]');
     if (link) {
       const match = link.getAttribute("href").match(/\/pull\/(\d+)/);
       if (match) {
@@ -168,6 +231,7 @@
       }
     }
 
+    log("could not extract PR number from row", row);
     return null;
   }
 
@@ -336,6 +400,114 @@
     }
   }
 
+  // Fetch review threads (inline review comment conversations) and their resolution state.
+  // The REST API does not expose whether a thread is resolved, so this uses GraphQL.
+  // GraphQL requires authentication: without a token this returns null and no badge is shown.
+  // API endpoint: POST /graphql — repository.pullRequest.reviewThreads { isResolved, isOutdated }
+  // Returns { total, unresolved, threads: [{ isResolved, isOutdated, path, author }] } or null.
+  const REVIEW_THREADS_QUERY = `
+    query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              isResolved
+              isOutdated
+              path
+              comments(first: 1) { nodes { author { login } } }
+            }
+          }
+        }
+      }
+    }`;
+
+  async function fetchReviewThreads(prNumber) {
+    try {
+      const headers = await getApiHeaders();
+      if (!headers.Authorization) return null; // GraphQL needs a token
+      headers["Content-Type"] = "application/json";
+      const url = getGraphqlUrl();
+
+      const threads = [];
+      let cursor = null;
+      // Safety cap: at most 5 pages (500 threads)
+      for (let page = 0; page < 5; page++) {
+        const response = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            query: REVIEW_THREADS_QUERY,
+            variables: {
+              owner: repoInfo.owner,
+              repo: repoInfo.repo,
+              number: Number(prNumber),
+              cursor,
+            },
+          }),
+        });
+        if (!response.ok) return null;
+        const payload = await response.json();
+        if (payload.errors?.length) {
+          console.warn("[GitHub PR Enhancer] GraphQL reviewThreads error:", payload.errors);
+          return null;
+        }
+        const connection = payload.data?.repository?.pullRequest?.reviewThreads;
+        if (!connection) return null;
+
+        for (const node of connection.nodes || []) {
+          if (!node) continue;
+          threads.push({
+            isResolved: !!node.isResolved,
+            isOutdated: !!node.isOutdated,
+            path: node.path || "",
+            author: node.comments?.nodes?.[0]?.author?.login || "unknown",
+          });
+        }
+
+        if (!connection.pageInfo?.hasNextPage) break;
+        cursor = connection.pageInfo.endCursor;
+      }
+
+      const unresolved = threads.filter((t) => !t.isResolved).length;
+      return { total: threads.length, unresolved, threads };
+    } catch (error) {
+      console.error("[GitHub PR Enhancer] Review threads fetch error:", error);
+      return null;
+    }
+  }
+
+  // Resolve the merge-conflict state of a PR from the pull request payload.
+  // GitHub computes `mergeable` lazily: the first request for a PR nobody has looked at
+  // recently returns null and kicks off a background job. In that case we poll the PR
+  // endpoint a few more times with a short delay.
+  // Returns { hasConflicts: boolean, state: mergeable_state } or null when still unknown.
+  function parseMergeState(data) {
+    if (!data || data.mergeable === null || data.mergeable === undefined) return null;
+    return {
+      hasConflicts: data.mergeable === false && data.mergeable_state === 'dirty',
+      state: data.mergeable_state || 'unknown',
+    };
+  }
+
+  // Background retry used when the first payload had `mergeable: null`. Runs after the row
+  // has already been rendered so that it never delays the initial display.
+  async function retryMergeState(pullUrl, headers) {
+    const RETRY_DELAYS_MS = [2000, 4000];
+    for (const delay of RETRY_DELAYS_MS) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      try {
+        const response = await fetch(pullUrl, { headers });
+        if (!response.ok) return null;
+        const result = parseMergeState(await response.json());
+        if (result) return result;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
   // Fetch deployments for a specific SHA
   // API endpoints:
   // - Deployments: GET /repos/{owner}/{repo}/deployments?sha={sha}
@@ -435,13 +607,50 @@
       .replace(/\n/g, '&#10;');
   }
 
+  // Format the review-conversation tag: number of unresolved review threads.
+  // Red when there are unresolved conversations, green when every thread is resolved.
+  // No tag when the PR has no review threads or the data is unavailable (no token).
+  function formatCommentsTag(reviewThreads) {
+    if (!reviewThreads || reviewThreads.total === 0) return '';
+
+    const { total, unresolved, threads } = reviewThreads;
+    const summaryLine = unresolved > 0
+      ? `${unresolved} unresolved conversation${unresolved > 1 ? 's' : ''} (${total} total)`
+      : `All ${total} conversation${total > 1 ? 's' : ''} resolved`;
+
+    // Unresolved first, then resolved; cap the list to keep the tooltip readable
+    const MAX_LINES = 15;
+    const sorted = [...threads].sort((a, b) => Number(a.isResolved) - Number(b.isResolved));
+    const lines = sorted.slice(0, MAX_LINES).map((t) => {
+      const icon = t.isResolved ? '✓' : '✗';
+      const outdated = t.isOutdated ? ' (outdated)' : '';
+      return `${icon} ${t.path || 'general'}${outdated} — ${t.author}`;
+    });
+    if (sorted.length > MAX_LINES) lines.push(`… +${sorted.length - MAX_LINES} more`);
+
+    const tooltip = escapeAttr([summaryLine, ...lines].join('\n'));
+
+    const tagClass = unresolved > 0 ? 'pr-status--comments-unresolved' : 'pr-status--comments-resolved';
+    const tagLabel = unresolved > 0 ? `${COMMENT_ICON}${unresolved}` : `${COMMENT_ICON}✓`;
+
+    return `<span class="pr-status-tag ${tagClass}" data-tooltip="${tooltip}">${tagLabel}</span>`;
+  }
+
+  // Format the merge-conflict tag. Only shown when the PR actually has conflicts.
+  function formatConflictsTag(mergeState) {
+    if (!mergeState || !mergeState.hasConflicts) return '';
+    const tooltip = escapeAttr('This branch has conflicts that must be resolved before merging');
+    return `<span class="pr-status-tag pr-status--conflicts" data-tooltip="${tooltip}">${MERGE_ICON}Conflicts</span>`;
+  }
+
   // Format review approval and CI status as compact tags.
   // Each tag has a multiline data-tooltip listing every condition and its state.
-  function formatStatusTags(reviewStatus, ciStatus) {
+  // `extraTagsHtml` (e.g. the review-conversation tag) is appended inside the same container.
+  function formatStatusTags(reviewStatus, ciStatus, extraTagsHtml = '') {
     let html = '';
 
     // ── Review tag ────────────────────────────────────────────────────────────
-    if (reviewStatus?.state !== 'none') {
+    if (reviewStatus && reviewStatus.state !== 'none') {
       const req = reviewStatus.requiredApprovals;
       const approved = reviewStatus.approvedCount ?? 0;
 
@@ -515,6 +724,8 @@
 
       html += `<span class="pr-status-tag ${tagClass}" data-tooltip="${tooltip}">${tagLabel}</span>`;
     }
+
+    html += extraTagsHtml || '';
 
     if (!html) return '';
     return `<span class="reviewer-separator">•</span><span class="pr-status-tags-container">${html}</span>`;
@@ -621,7 +832,7 @@
   async function fetchReviewers(prNumber) {
     const apiBase = getApiBaseUrl();
     const pullUrl = `${apiBase}/repos/${repoInfo.owner}/${repoInfo.repo}/pulls/${prNumber}`;
-    const reviewsUrl = `${pullUrl}/reviews`;
+    const reviewsUrl = `${pullUrl}/reviews?per_page=100`;
 
     try {
       const headers = await getApiHeaders();
@@ -646,6 +857,11 @@
       const commitDatePromise = headSha ? fetchCommitDate(headSha) : Promise.resolve(null);
       const ciStatusPromise = headSha ? fetchCiStatus(headSha) : Promise.resolve({ checks: [] });
       const branchProtectionPromise = fetchBranchProtection(pullData.base.ref);
+      const reviewThreadsPromise = fetchReviewThreads(prNumber);
+      // Merge state comes from the payload we already have; when GitHub has not computed it
+      // yet, expose a background retry promise that the caller resolves after first render.
+      const mergeState = parseMergeState(pullData);
+      const mergeStateRetry = mergeState ? null : retryMergeState(pullUrl, headers);
 
       // Extract requested reviewers (excluding bots)
       const requestedUsers = Array.isArray(pullData.requested_reviewers)
@@ -749,8 +965,8 @@
         }
       }
 
-      const [deployments, lastCommitDate, ciRaw, branchProtection] = await Promise.all([
-        deploymentsPromise, commitDatePromise, ciStatusPromise, branchProtectionPromise,
+      const [deployments, lastCommitDate, ciRaw, branchProtection, reviewThreads] = await Promise.all([
+        deploymentsPromise, commitDatePromise, ciStatusPromise, branchProtectionPromise, reviewThreadsPromise,
       ]);
 
       // Compute review approval status using required count from branch protection
@@ -793,10 +1009,26 @@
         })),
       };
 
-      return { reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus };
+      return { reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus, reviewThreads, mergeState, mergeStateRetry };
     } catch (error) {
       return { error: error.message || "Unknown error" };
     }
+  }
+
+  // Build the full HTML for a row from fetched data, honouring the display toggles.
+  function buildRowHtml({ reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus, reviewThreads, mergeState }) {
+    // Review + CI tags, the review-conversation tag and the conflicts tag share one container
+    const conflictsHtml = displayToggles.showConflicts ? formatConflictsTag(mergeState) : '';
+    const commentsHtml = displayToggles.showComments ? formatCommentsTag(reviewThreads) : '';
+    const tagsHtml = formatStatusTags(
+      displayToggles.showStatusTags ? reviewStatus : null,
+      displayToggles.showStatusTags ? ciStatus : null,
+      conflictsHtml + commentsHtml,
+    );
+    const datesInfoHtml = displayToggles.showDates ? formatDatesInfo(lastCommitDate, myLastReview, isAuthor, latestReviewDate) : '';
+    const deploymentBadgesHtml = displayToggles.showDeployments ? formatDeploymentBadges(deployments) : '';
+    const reviewersHtml = displayToggles.showReviewers ? formatReviewerAvatars(reviewers) : '';
+    return tagsHtml + datesInfoHtml + deploymentBadgesHtml + reviewersHtml;
   }
 
   function updateRow(row) {
@@ -825,7 +1057,7 @@
     const promise = fetchReviewers(prNumber);
     rowPromises.set(row, promise);
 
-    promise.then(({ reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus, error }) => {
+    promise.then(({ reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus, reviewThreads, mergeState, mergeStateRetry, error }) => {
       if (rowPromises.get(row) !== promise) {
         return;
       }
@@ -840,14 +1072,21 @@
         return;
       }
 
-      const statusTagsHtml = displayToggles.showStatusTags ? formatStatusTags(reviewStatus, ciStatus) : '';
-      const datesInfoHtml = displayToggles.showDates ? formatDatesInfo(lastCommitDate, myLastReview, isAuthor, latestReviewDate) : '';
-      const deploymentBadgesHtml = displayToggles.showDeployments ? formatDeploymentBadges(deployments) : '';
-      const reviewersHtml = displayToggles.showReviewers ? formatReviewerAvatars(reviewers) : '';
-      setSpanText(infoSpan, statusTagsHtml + datesInfoHtml + deploymentBadgesHtml + reviewersHtml, false);
+      const rowData = { reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus, reviewThreads, mergeState };
+      setSpanText(infoSpan, buildRowHtml(rowData), false);
       infoSpan.removeAttribute('title');
       rowReviewerData.set(row, reviewers);
-      rowFullData.set(row, { reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus });
+      rowFullData.set(row, rowData);
+
+      // Merge state not computed yet by GitHub: update the row once the background retry resolves
+      if (mergeStateRetry) {
+        mergeStateRetry.then((lateMergeState) => {
+          if (!lateMergeState || rowFullData.get(row) !== rowData) return; // row was re-fetched meanwhile
+          rowData.mergeState = lateMergeState;
+          const span = ensureInfoSpan(row);
+          if (span) setSpanText(span, buildRowHtml(rowData), false);
+        });
+      }
       let barChanged = false;
       for (const r of reviewers) {
         const key = r.isTeam ? `@${r.login}` : r.login;
@@ -868,6 +1107,7 @@
 
   function processRows(root = document) {
     const rows = root.querySelectorAll(ROW_SELECTOR);
+    log(`processRows: ${rows.length} row(s) matched "${ROW_SELECTOR}"`);
     rows.forEach((row) => {
       updateRow(row);
     });
@@ -912,7 +1152,11 @@
     filterBar = document.createElement("div");
     filterBar.className = "github-show-reviewer-filter pl-3";
     filterBar.style.display = "none";
-    firstRow.parentNode.insertBefore(filterBar, firstRow);
+    // The React list is a <ul> owned by React: anything inserted between its
+    // children gets dropped on re-render, so sit above the whole list.
+    const anchor =
+      firstRow.closest('[data-listview-component="items-list"]') || firstRow;
+    anchor.parentNode.insertBefore(filterBar, anchor);
 
     filterBar.addEventListener('click', (e) => {
       const el = e.target.closest('[aria-label]');
@@ -1036,6 +1280,7 @@
   // Initialize extension (re-run when URL changes)
   function initializeExtension() {
     const newRepoInfo = checkAndGetRepoInfo();
+    log("initializeExtension", window.location.href, newRepoInfo);
 
     if (!newRepoInfo) {
       if (observer) {
@@ -1140,12 +1385,7 @@
       if (!data) return;
       const infoSpan = ensureInfoSpan(row);
       if (!infoSpan) return;
-      const { reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus } = data;
-      const statusTagsHtml = displayToggles.showStatusTags ? formatStatusTags(reviewStatus, ciStatus) : '';
-      const datesInfoHtml = displayToggles.showDates ? formatDatesInfo(lastCommitDate, myLastReview, isAuthor, latestReviewDate) : '';
-      const deploymentBadgesHtml = displayToggles.showDeployments ? formatDeploymentBadges(deployments) : '';
-      const reviewersHtml = displayToggles.showReviewers ? formatReviewerAvatars(reviewers) : '';
-      setSpanText(infoSpan, statusTagsHtml + datesInfoHtml + deploymentBadgesHtml + reviewersHtml, false);
+      setSpanText(infoSpan, buildRowHtml(data), false);
     });
 
     // Re-render filter bar (handles showFilterBar toggle)

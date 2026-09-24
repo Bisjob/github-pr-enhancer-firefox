@@ -5,6 +5,8 @@ const TOGGLE_DEFAULTS = {
   showDates: true,
   showDeployments: true,
   showFilterBar: true,
+  showComments: true,
+  showConflicts: true,
 };
 
 // Open settings page

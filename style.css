@@ -352,6 +352,33 @@
   50% { opacity: 0.55; }
 }
 
+/* Review conversation tag (unresolved review threads) */
+.pr-status-tag svg {
+  flex-shrink: 0;
+  fill: currentColor;
+  margin-right: 1px;
+  vertical-align: middle;
+}
+
+.pr-status--comments-unresolved {
+  background: var(--bgColor-danger-muted, #ffebe9);
+  color: var(--fgColor-danger, #cf222e);
+  border: 1px solid var(--borderColor-danger-muted, #ffcecb);
+}
+
+.pr-status--conflicts {
+  background: var(--bgColor-danger-muted, #ffebe9);
+  color: var(--fgColor-danger, #cf222e);
+  border: 1px solid var(--borderColor-danger-muted, #ffcecb);
+}
+
+.pr-status--comments-resolved {
+  background: var(--bgColor-success-muted, #dafbe1);
+  color: var(--fgColor-success, #1a7f37);
+  border: 1px solid var(--borderColor-success-muted, #aceebb);
+  opacity: 0.85;
+}
+
 /* Date info badges (last commit & my review) */
 .pr-date-badge {
   display: inline-flex;
