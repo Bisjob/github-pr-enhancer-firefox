@@ -1,6 +1,44 @@
 (() => {
-  if (window.location.hostname !== "github.com") {
+  // Allow GitHub.com and GitHub Enterprise domains (*.ghe.com)
+  // For enterprise, API endpoint is usually at https://<host>/api/v3
+  function getApiBaseUrl() {
+    const hostname = window.location.hostname;
+    if (hostname === "github.com" || hostname.endsWith(".github.com")) {
+      return "https://api.github.com";
+    }
+    if (hostname.endsWith(".ghe.com")) {
+      return `${window.location.protocol}//${hostname}/api/v3`;
+    }
+    throw new Error(`Unsupported host for API access: ${hostname}`);
+  }
+
+  // GraphQL endpoint (needed for review thread resolution status, which REST does not expose)
+  function getGraphqlUrl() {
+    const hostname = window.location.hostname;
+    if (hostname === "github.com" || hostname.endsWith(".github.com")) {
+      return "https://api.github.com/graphql";
+    }
+    if (hostname.endsWith(".ghe.com")) {
+      return `${window.location.protocol}//${hostname}/api/graphql`;
+    }
+    throw new Error(`Unsupported host for GraphQL access: ${hostname}`);
+  }
+
+  function isAllowedHost() {
+    const hostname = window.location.hostname;
+    return (
+      hostname === "github.com" ||
+      hostname.endsWith(".github.com") ||
+      hostname.endsWith(".ghe.com")
+    );
+  }
+
+  if (!isAllowedHost()) {
     return;
+  }
+
+  function getWebBaseUrl() {
+    return `${window.location.protocol}//${window.location.hostname}`;
   }
 
   // Check if current page is a PR list page and extract repo info
@@ -15,20 +53,78 @@
 
   let repoInfo = checkAndGetRepoInfo();
   let rowPromises = new WeakMap();
-  const ROW_SELECTOR = ".js-issue-row";
+  // The React list view (GHE 3.18+/github.com) uses hashed CSS-module class
+  // names, so anchor on the stable data attributes instead. The legacy
+  // ".js-issue-row" markup is kept for older GHE releases.
+  const ROW_SELECTOR =
+    '[data-listview-component="items-list"] > li, .js-issue-row';
   const SPAN_CLASS = "github-show-reviewer";
   let currentUrl = window.location.href;
   let observer = null;
   let rowReviewerData = new WeakMap();
+  // Cached data per row for re-rendering without repeating API calls
+  let rowFullData = new WeakMap();
   let allReviewers = new Map();
   let activeFilter = null;
   let filterBar = null;
+
+  // Display toggles (kept in sync with storage)
+  const TOGGLE_DEFAULTS = {
+    showStatusTags: true,
+    showReviewers: true,
+    showDates: true,
+    showDeployments: true,
+    showFilterBar: true,
+    showComments: true,
+    showConflicts: true,
+  };
+  let displayToggles = { ...TOGGLE_DEFAULTS };
+
+  async function loadDisplayToggles() {
+    try {
+      const result = await browser.storage.sync.get(['displayToggles']);
+      displayToggles = { ...TOGGLE_DEFAULTS, ...(result.displayToggles || {}) };
+    } catch { /* use defaults */ }
+  }
+  loadDisplayToggles();
   const TEAM_ICON = `<svg aria-hidden="true" height="16" viewBox="0 0 16 16" width="16" class="octicon octicon-people">
     <path d="M2 5.5a3.5 3.5 0 1 1 5.898 2.549 5.508 5.508 0 0 1 3.034 4.084.75.75 0 1 1-1.482.235 4 4 0 0 0-7.9 0 .75.75 0 0 1-1.482-.236A5.507 5.507 0 0 1 3.102 8.05 3.493 3.493 0 0 1 2 5.5ZM11 4a3.001 3.001 0 0 1 2.22 5.018 5.01 5.01 0 0 1 2.56 3.012.749.749 0 0 1-.885.954.752.752 0 0 1-.549-.514 3.507 3.507 0 0 0-2.522-2.372.75.75 0 0 1-.574-.73v-.352a.75.75 0 0 1 .416-.672A1.5 1.5 0 0 0 11 5.5.75.75 0 0 1 11 4Zm-5.5-.5a2 2 0 1 0-.001 3.999A2 2 0 0 0 5.5 3.5Z"></path>
   </svg>`;
+  const COMMIT_ICON = `<svg aria-hidden="true" height="12" viewBox="0 0 16 16" width="12" class="octicon octicon-git-commit"><path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5Zm-1.43-.75a2.5 2.5 0 1 0-5 0 2.5 2.5 0 0 0 5 0Z"></path></svg>`;
+  const EYE_ICON = `<svg aria-hidden="true" height="12" viewBox="0 0 16 16" width="12" class="octicon octicon-eye"><path d="M8 2c1.981 0 3.671.992 4.933 2.078 1.27 1.091 2.187 2.345 2.637 3.023a1.62 1.62 0 0 1 0 1.798c-.45.678-1.367 1.932-2.637 3.023C11.67 13.008 9.981 14 8 14c-1.981 0-3.671-.992-4.933-2.078C1.797 10.83.88 9.576.43 8.898a1.62 1.62 0 0 1 0-1.798c.45-.677 1.367-1.931 2.637-3.022C4.33 2.992 6.019 2 8 2ZM1.679 7.932a.12.12 0 0 0 0 .136c.411.622 1.241 1.75 2.366 2.717C5.176 11.758 6.527 12.5 8 12.5c1.473 0 2.825-.742 3.955-1.715 1.124-.967 1.954-2.096 2.366-2.717a.12.12 0 0 0 0-.136c-.412-.621-1.242-1.75-2.366-2.717C10.824 4.242 9.473 3.5 8 3.5c-1.473 0-2.825.742-3.955 1.715-1.124.967-1.954 2.096-2.366 2.717ZM8 10a2 2 0 1 1-.001-3.999A2 2 0 0 1 8 10Z"></path></svg>`;
+  const COMMENT_ICON = `<svg aria-hidden="true" height="12" viewBox="0 0 16 16" width="12" class="octicon octicon-comment-discussion"><path d="M1.75 1h8.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 10.25 10H7.061l-2.574 2.573A1.458 1.458 0 0 1 2 11.543V10h-.25A1.75 1.75 0 0 1 0 8.25v-5.5C0 1.784.784 1 1.75 1ZM1.5 2.75v5.5c0 .138.112.25.25.25h1a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h3.5a.25.25 0 0 0 .25-.25v-5.5a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25Zm13 2a.25.25 0 0 0-.25-.25h-.5a.75.75 0 0 1 0-1.5h.5c.966 0 1.75.784 1.75 1.75v5.5A1.75 1.75 0 0 1 14.25 12H14v1.543a1.458 1.458 0 0 1-2.487 1.03L9.22 12.28a.749.749 0 0 1 .326-1.275.749.749 0 0 1 .734.215l2.22 2.22v-2.19a.75.75 0 0 1 .75-.75h1a.25.25 0 0 0 .25-.25Z"></path></svg>`;
+  const MERGE_ICON = `<svg aria-hidden="true" height="12" viewBox="0 0 16 16" width="12" class="octicon octicon-git-merge"><path d="M5.45 5.154A4.25 4.25 0 0 0 9.25 7.5h1.378a2.251 2.251 0 1 1 0 1.5H9.25A5.734 5.734 0 0 1 5 7.123v3.505a2.25 2.25 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.95-.218ZM4.25 13.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm8.5-4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5ZM5 3.25a.75.75 0 1 0 0 .005V3.25Z"></path></svg>`;
   let initializationTimeout = null;
 
-  // Get GitHub API headers (includes token if available)
+  // Toggle from the page console with:
+  //   localStorage.ghPrEnhancerDebug = "1"   (then reload)
+  const DEBUG = (() => {
+    try {
+      return localStorage.getItem("ghPrEnhancerDebug") === "1";
+    } catch (error) {
+      return false;
+    }
+  })();
+
+  function log(...args) {
+    if (DEBUG) {
+      console.log("[GitHub PR Enhancer]", ...args);
+    }
+  }
+
+  function getCurrentUserLogin() {
+    const login =
+      document.querySelector('meta[name="user-login"]')?.getAttribute('content') ||
+      document.querySelector('meta[name="octolytics-actor-login"]')?.getAttribute('content') ||
+      null;
+    if (!login) {
+      log("current user login not found in page meta tags");
+    }
+    return login;
+  }
+
+  // Get GitHub API headers, picking the most specific token available.
+  // Priority: per-owner token > default token > no auth.
   async function getApiHeaders() {
     const headers = {
       Accept: "application/vnd.github+json",
@@ -36,9 +132,15 @@
     };
 
     try {
-      const result = await browser.storage.sync.get(["githubToken"]);
-      if (result.githubToken) {
-        headers.Authorization = `Bearer ${result.githubToken}`;
+      const result = await browser.storage.sync.get(["githubToken", "ownerTokens"]);
+
+      // Resolve the owner from the current repo context (may be null on non-PR pages)
+      const owner = repoInfo?.owner || null;
+      const ownerToken = owner && result.ownerTokens?.[owner];
+      const token = ownerToken || result.githubToken || null;
+
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
       }
     } catch (error) {
       console.error(
@@ -52,10 +154,27 @@
 
   // Create and return span element for displaying reviewer info in PR row
   function ensureInfoSpan(row) {
+    // React list view: append to the metadata line holding "#1234 · author
+    // opened <date> · Review required · checks".
+    const description =
+      row.querySelector('[data-testid="timestamp-container"]')?.parentElement ||
+      row.querySelector('[class*="Description-module__container"]');
+    if (description) {
+      let span = description.querySelector(`.${SPAN_CLASS}`);
+      if (!span) {
+        span = document.createElement("span");
+        span.className = `${SPAN_CLASS} issue-meta-section`;
+        description.appendChild(span);
+      }
+      return span;
+    }
+
+    // Legacy markup
     const metaContainer = row.querySelector(
       ".d-flex.mt-1.text-small.color-fg-muted",
     );
     if (!metaContainer) {
+      log("no metadata container found in row", row);
       return null;
     }
 
@@ -100,8 +219,11 @@
       }
     }
 
-    // Fallback: extract from PR link
-    const link = row.querySelector('a.Link--primary[href*="/pull/"]');
+    // Fallback: extract from the PR title link
+    const link =
+      row.querySelector('a[data-testid="listitem-title-link"]') ||
+      row.querySelector('a.Link--primary[href*="/pull/"]') ||
+      row.querySelector('a[href*="/pull/"]');
     if (link) {
       const match = link.getAttribute("href").match(/\/pull\/(\d+)/);
       if (match) {
@@ -109,6 +231,7 @@
       }
     }
 
+    log("could not extract PR number from row", row);
     return null;
   }
 
@@ -130,7 +253,7 @@
         // User avatar
         const avatarUrl =
           reviewer.avatarUrl ||
-          `https://github.com/${reviewer.login}.png?size=40`;
+          `${getWebBaseUrl()}/${reviewer.login}.png?size=40`;
         const stateClass =
           reviewer.state === "APPROVED"
             ? " reviewer-state-approved"
@@ -162,7 +285,12 @@
 
   // Update span element content with optional eye icon and error styling
   function setSpanText(span, text, isError = false) {
-    span.innerHTML = text;
+    const doc = new DOMParser().parseFromString(text, 'text/html');
+    const fragment = document.createDocumentFragment();
+    while (doc.body.firstChild) {
+      fragment.appendChild(document.adoptNode(doc.body.firstChild));
+    }
+    span.replaceChildren(fragment);
     span.classList.toggle(`${SPAN_CLASS}--success`, !isError);
     span.classList.toggle(`${SPAN_CLASS}--error`, isError);
   }
@@ -178,12 +306,215 @@
     );
   }
 
+  // Fetch the date of a specific commit via the git objects API
+  // API endpoint: GET /repos/{owner}/{repo}/git/commits/{sha}
+  async function fetchCommitDate(headSha) {
+    const apiBase = getApiBaseUrl();
+    const commitUrl = `${apiBase}/repos/${repoInfo.owner}/${repoInfo.repo}/git/commits/${headSha}`;
+    try {
+      const headers = await getApiHeaders();
+      const response = await fetch(commitUrl, { headers });
+      if (!response.ok) return null;
+      const data = await response.json();
+      return data.committer?.date || data.author?.date || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Fetch CI status for a commit SHA
+  // API endpoints:
+  // - Check runs:    GET /repos/{owner}/{repo}/commits/{sha}/check-runs?filter=latest
+  // - Legacy status: GET /repos/{owner}/{repo}/commits/{sha}/status
+  // Fetch CI check-runs and legacy statuses for a commit SHA.
+  // Returns { checks: [{ name, ciState: 'success'|'failure'|'pending' }] }
+  // API endpoints:
+  // - Check runs:    GET /repos/{owner}/{repo}/commits/{sha}/check-runs?filter=latest
+  // - Legacy status: GET /repos/{owner}/{repo}/commits/{sha}/status
+  async function fetchCiStatus(headSha) {
+    const apiBase = getApiBaseUrl();
+    const headers = await getApiHeaders();
+    const checkRunsUrl = `${apiBase}/repos/${repoInfo.owner}/${repoInfo.repo}/commits/${headSha}/check-runs?filter=latest&per_page=100`;
+    const statusUrl = `${apiBase}/repos/${repoInfo.owner}/${repoInfo.repo}/commits/${headSha}/status`;
+    try {
+      const [checkRunsResponse, statusResponse] = await Promise.all([
+        fetch(checkRunsUrl, { headers }),
+        fetch(statusUrl, { headers }),
+      ]);
+
+      const checks = [];
+
+      if (checkRunsResponse.ok) {
+        const data = await checkRunsResponse.json();
+        for (const run of data.check_runs || []) {
+          if (run.conclusion === 'cancelled') continue; // skip superseded runs
+          let ciState;
+          if (run.status !== 'completed') {
+            ciState = 'pending';
+          } else if (['failure', 'action_required', 'timed_out'].includes(run.conclusion)) {
+            ciState = 'failure';
+          } else {
+            ciState = 'success';
+          }
+          checks.push({ name: run.name, ciState });
+        }
+      }
+
+      if (statusResponse.ok) {
+        const data = await statusResponse.json();
+        for (const s of data.statuses || []) {
+          let ciState;
+          if (s.state === 'pending') ciState = 'pending';
+          else if (s.state === 'failure' || s.state === 'error') ciState = 'failure';
+          else ciState = 'success';
+          checks.push({ name: s.context, ciState });
+        }
+      }
+
+      return { checks };
+    } catch {
+      return { checks: [] };
+    }
+  }
+
+  // Fetch branch protection rules to determine required approvals count and required check names.
+  // API endpoint: GET /repos/{owner}/{repo}/branches/{branch}
+  async function fetchBranchProtection(baseRef) {
+    const apiBase = getApiBaseUrl();
+    const url = `${apiBase}/repos/${repoInfo.owner}/${repoInfo.repo}/branches/${encodeURIComponent(baseRef)}`;
+    try {
+      const headers = await getApiHeaders();
+      const resp = await fetch(url, { headers });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      const protection = data.protection;
+      if (!protection) return null;
+      const requiredApprovals = protection.required_pull_request_reviews?.required_approving_review_count ?? null;
+      // Merge legacy `contexts` array and new `checks` array (both may be present)
+      const legacyContexts = protection.required_status_checks?.contexts || [];
+      const newChecks = (protection.required_status_checks?.checks || []).map((c) => c.context);
+      const requiredChecks = [...new Set([...legacyContexts, ...newChecks])];
+      return { requiredApprovals, requiredChecks };
+    } catch {
+      return null;
+    }
+  }
+
+  // Fetch review threads (inline review comment conversations) and their resolution state.
+  // The REST API does not expose whether a thread is resolved, so this uses GraphQL.
+  // GraphQL requires authentication: without a token this returns null and no badge is shown.
+  // API endpoint: POST /graphql — repository.pullRequest.reviewThreads { isResolved, isOutdated }
+  // Returns { total, unresolved, threads: [{ isResolved, isOutdated, path, author }] } or null.
+  const REVIEW_THREADS_QUERY = `
+    query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          reviewThreads(first: 100, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              isResolved
+              isOutdated
+              path
+              comments(first: 1) { nodes { author { login } } }
+            }
+          }
+        }
+      }
+    }`;
+
+  async function fetchReviewThreads(prNumber) {
+    try {
+      const headers = await getApiHeaders();
+      if (!headers.Authorization) return null; // GraphQL needs a token
+      headers["Content-Type"] = "application/json";
+      const url = getGraphqlUrl();
+
+      const threads = [];
+      let cursor = null;
+      // Safety cap: at most 5 pages (500 threads)
+      for (let page = 0; page < 5; page++) {
+        const response = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            query: REVIEW_THREADS_QUERY,
+            variables: {
+              owner: repoInfo.owner,
+              repo: repoInfo.repo,
+              number: Number(prNumber),
+              cursor,
+            },
+          }),
+        });
+        if (!response.ok) return null;
+        const payload = await response.json();
+        if (payload.errors?.length) {
+          console.warn("[GitHub PR Enhancer] GraphQL reviewThreads error:", payload.errors);
+          return null;
+        }
+        const connection = payload.data?.repository?.pullRequest?.reviewThreads;
+        if (!connection) return null;
+
+        for (const node of connection.nodes || []) {
+          if (!node) continue;
+          threads.push({
+            isResolved: !!node.isResolved,
+            isOutdated: !!node.isOutdated,
+            path: node.path || "",
+            author: node.comments?.nodes?.[0]?.author?.login || "unknown",
+          });
+        }
+
+        if (!connection.pageInfo?.hasNextPage) break;
+        cursor = connection.pageInfo.endCursor;
+      }
+
+      const unresolved = threads.filter((t) => !t.isResolved).length;
+      return { total: threads.length, unresolved, threads };
+    } catch (error) {
+      console.error("[GitHub PR Enhancer] Review threads fetch error:", error);
+      return null;
+    }
+  }
+
+  // Resolve the merge-conflict state of a PR from the pull request payload.
+  // GitHub computes `mergeable` lazily: the first request for a PR nobody has looked at
+  // recently returns null and kicks off a background job. In that case we poll the PR
+  // endpoint a few more times with a short delay.
+  // Returns { hasConflicts: boolean, state: mergeable_state } or null when still unknown.
+  function parseMergeState(data) {
+    if (!data || data.mergeable === null || data.mergeable === undefined) return null;
+    return {
+      hasConflicts: data.mergeable === false && data.mergeable_state === 'dirty',
+      state: data.mergeable_state || 'unknown',
+    };
+  }
+
+  // Background retry used when the first payload had `mergeable: null`. Runs after the row
+  // has already been rendered so that it never delays the initial display.
+  async function retryMergeState(pullUrl, headers) {
+    const RETRY_DELAYS_MS = [2000, 4000];
+    for (const delay of RETRY_DELAYS_MS) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      try {
+        const response = await fetch(pullUrl, { headers });
+        if (!response.ok) return null;
+        const result = parseMergeState(await response.json());
+        if (result) return result;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
   // Fetch deployments for a specific SHA
   // API endpoints:
   // - Deployments: GET /repos/{owner}/{repo}/deployments?sha={sha}
   // - Deployment statuses: GET /repos/{owner}/{repo}/deployments/{deployment_id}/statuses
   async function fetchDeployments(headSha) {
-    const deploymentsUrl = `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/deployments?sha=${headSha}&per_page=10`;
+    const apiBase = getApiBaseUrl();
+    const deploymentsUrl = `${apiBase}/repos/${repoInfo.owner}/${repoInfo.repo}/deployments?sha=${headSha}&per_page=10`;
 
     try {
       const headers = await getApiHeaders();
@@ -201,7 +532,7 @@
       // Fetch latest status for each deployment (in parallel)
       const deploymentResults = await Promise.all(
         deployments.map(async (deployment) => {
-          const statusUrl = `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/deployments/${deployment.id}/statuses?per_page=1`;
+          const statusUrl = `${apiBase}/repos/${repoInfo.owner}/${repoInfo.repo}/deployments/${deployment.id}/statuses?per_page=1`;
           try {
             const statusResponse = await fetch(statusUrl, { headers });
             if (!statusResponse.ok) {
@@ -265,6 +596,213 @@
     return `${diffDays}d ago`;
   }
 
+  // Encode a plain string (may contain newlines) for safe embedding as an HTML attribute value.
+  // The browser decodes the entity references back when getAttribute() is called.
+  function escapeAttr(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '&#10;');
+  }
+
+  // Format the review-conversation tag: number of unresolved review threads.
+  // Red when there are unresolved conversations, green when every thread is resolved.
+  // No tag when the PR has no review threads or the data is unavailable (no token).
+  function formatCommentsTag(reviewThreads) {
+    if (!reviewThreads || reviewThreads.total === 0) return '';
+
+    const { total, unresolved, threads } = reviewThreads;
+    const summaryLine = unresolved > 0
+      ? `${unresolved} unresolved conversation${unresolved > 1 ? 's' : ''} (${total} total)`
+      : `All ${total} conversation${total > 1 ? 's' : ''} resolved`;
+
+    // Unresolved first, then resolved; cap the list to keep the tooltip readable
+    const MAX_LINES = 15;
+    const sorted = [...threads].sort((a, b) => Number(a.isResolved) - Number(b.isResolved));
+    const lines = sorted.slice(0, MAX_LINES).map((t) => {
+      const icon = t.isResolved ? '✓' : '✗';
+      const outdated = t.isOutdated ? ' (outdated)' : '';
+      return `${icon} ${t.path || 'general'}${outdated} — ${t.author}`;
+    });
+    if (sorted.length > MAX_LINES) lines.push(`… +${sorted.length - MAX_LINES} more`);
+
+    const tooltip = escapeAttr([summaryLine, ...lines].join('\n'));
+
+    const tagClass = unresolved > 0 ? 'pr-status--comments-unresolved' : 'pr-status--comments-resolved';
+    const tagLabel = unresolved > 0 ? `${COMMENT_ICON}${unresolved}` : `${COMMENT_ICON}✓`;
+
+    return `<span class="pr-status-tag ${tagClass}" data-tooltip="${tooltip}">${tagLabel}</span>`;
+  }
+
+  // Format the merge-conflict tag. Only shown when the PR actually has conflicts.
+  function formatConflictsTag(mergeState) {
+    if (!mergeState || !mergeState.hasConflicts) return '';
+    const tooltip = escapeAttr('This branch has conflicts that must be resolved before merging');
+    return `<span class="pr-status-tag pr-status--conflicts" data-tooltip="${tooltip}">${MERGE_ICON}Conflicts</span>`;
+  }
+
+  // Format review approval and CI status as compact tags.
+  // Each tag has a multiline data-tooltip listing every condition and its state.
+  // `extraTagsHtml` (e.g. the review-conversation tag) is appended inside the same container.
+  function formatStatusTags(reviewStatus, ciStatus, extraTagsHtml = '') {
+    let html = '';
+
+    // ── Review tag ────────────────────────────────────────────────────────────
+    if (reviewStatus && reviewStatus.state !== 'none') {
+      const req = reviewStatus.requiredApprovals;
+      const approved = reviewStatus.approvedCount ?? 0;
+
+      // Line 1: summary
+      const summaryLine = req !== null
+        ? `Approvals: ${approved}/${req} required`
+        : `Approvals: ${approved}`;
+
+      // One line per reviewer
+      const reviewerLines = (reviewStatus.reviewerDetails || []).map((r) => {
+        const icon = r.status === 'approved' ? '✓' : r.status === 'changes' ? '✗' : '⏳';
+        const label = r.status === 'approved' ? 'approved'
+          : r.status === 'changes' ? 'changes requested'
+          : 'pending';
+        return `${icon} ${r.isTeam ? '@' : ''}${r.login} — ${label}`;
+      });
+
+      const tooltip = escapeAttr([summaryLine, ...reviewerLines].join('\n'));
+
+      let tagClass, tagLabel;
+      if (reviewStatus.state === 'changes') {
+        tagClass = 'pr-status--changes';
+        tagLabel = req !== null ? `✗ ${approved}/${req}` : '✗ Changes';
+      } else if (reviewStatus.state === 'approved') {
+        tagClass = 'pr-status--approved';
+        tagLabel = req !== null ? `✓ ${approved}/${req}` : '✓ Approved';
+      } else {
+        tagClass = 'pr-status--review-pending';
+        tagLabel = req !== null ? `⏳ ${approved}/${req}` : '⏳ Reviews';
+      }
+
+      html += `<span class="pr-status-tag ${tagClass}" data-tooltip="${tooltip}">${tagLabel}</span>`;
+    }
+
+    // ── CI tag ────────────────────────────────────────────────────────────────
+    const checks = ciStatus?.checks || [];
+    if (checks.length > 0) {
+      const hasRequiredFlag = checks.some((c) => !c.required); // at least one optional → flag is meaningful
+      // Determine overall state from required checks only
+      const requiredChecks = checks.filter((c) => c.required);
+      const hasFailures = requiredChecks.some((c) => c.ciState === 'failure');
+      const hasPending  = requiredChecks.some((c) => c.ciState === 'pending');
+
+      // Sort: failures first, then pending, then success; required before optional
+      const sorted = [...checks].sort((a, b) => {
+        const order = { failure: 0, pending: 1, success: 2 };
+        if (a.required !== b.required) return a.required ? -1 : 1;
+        return (order[a.ciState] ?? 3) - (order[b.ciState] ?? 3);
+      });
+
+      const tooltipLines = sorted.map((c) => {
+        const icon = c.ciState === 'success' ? '✓' : c.ciState === 'failure' ? '✗' : '⏳';
+        const suffix = hasRequiredFlag ? (c.required ? ' ★' : '') : '';
+        return `${icon} ${c.name}${suffix}`;
+      });
+      if (hasRequiredFlag) tooltipLines.push('(★ = required)');
+
+      const tooltip = escapeAttr(tooltipLines.join('\n'));
+
+      let tagClass, tagLabel;
+      if (hasFailures) {
+        tagClass = 'pr-status--ci-failure';
+        tagLabel = '✗ CI';
+      } else if (hasPending) {
+        tagClass = 'pr-status--ci-pending';
+        tagLabel = '● CI';
+      } else {
+        tagClass = 'pr-status--ci-success';
+        tagLabel = '✓ CI';
+      }
+
+      html += `<span class="pr-status-tag ${tagClass}" data-tooltip="${tooltip}">${tagLabel}</span>`;
+    }
+
+    html += extraTagsHtml || '';
+
+    if (!html) return '';
+    return `<span class="reviewer-separator">•</span><span class="pr-status-tags-container">${html}</span>`;
+  }
+
+  // Format a single combined commit & review date badge.
+  // Single combined date badge:
+  // - Author view: show latest reviewer activity (or commit date if no reviews yet).
+  // - Reviewer view: show own review status, or stale warning if new commits exist.
+  // - Fallback: show last commit date.
+  function formatDatesInfo(lastCommitDate, myLastReview, isAuthor, latestReviewDate) {
+    if (!lastCommitDate && !myLastReview && !latestReviewDate) return '';
+
+    let icon, relTime, badgeClass, tooltip;
+
+    if (isAuthor) {
+      // Author's perspective: show latest review from others
+      if (latestReviewDate) {
+        relTime = formatRelativeTime(latestReviewDate.date);
+        icon = EYE_ICON;
+        const stateLabel =
+          latestReviewDate.state === 'APPROVED' ? 'Approved'
+          : latestReviewDate.state === 'CHANGES_REQUESTED' ? 'Changes requested'
+          : 'Reviewed';
+        badgeClass =
+          latestReviewDate.state === 'APPROVED' ? 'pr-review-date--approved'
+          : latestReviewDate.state === 'CHANGES_REQUESTED' ? 'pr-review-date--changes'
+          : 'pr-review-date';
+        tooltip = `Latest review: ${latestReviewDate.login} — ${stateLabel} (${new Date(latestReviewDate.date).toLocaleString()})`;
+      } else if (lastCommitDate) {
+        // No reviews yet — show commit date
+        relTime = formatRelativeTime(lastCommitDate);
+        icon = COMMIT_ICON;
+        badgeClass = 'pr-commit-date';
+        tooltip = `Last commit: ${new Date(lastCommitDate).toLocaleString()}`;
+      } else {
+        return '';
+      }
+    } else {
+      // Reviewer's perspective
+      const hasNewCommits = lastCommitDate && myLastReview
+        && new Date(lastCommitDate) > new Date(myLastReview.date);
+
+      if (!myLastReview) {
+        if (!lastCommitDate) return '';
+        // No review yet — show commit date only
+        relTime = formatRelativeTime(lastCommitDate);
+        icon = COMMIT_ICON;
+        badgeClass = 'pr-commit-date';
+        tooltip = `Last commit: ${new Date(lastCommitDate).toLocaleString()}`;
+      } else if (hasNewCommits) {
+        // Commits landed after review — stale, show commit date
+        relTime = formatRelativeTime(lastCommitDate);
+        icon = COMMIT_ICON;
+        badgeClass = 'pr-date-badge--stale';
+        const commitFull = new Date(lastCommitDate).toLocaleString();
+        const reviewFull = new Date(myLastReview.date).toLocaleString();
+        tooltip = `New commits since your review\nLast commit: ${commitFull}\nYour review: ${reviewFull}`;
+      } else {
+        // Reviewed, no new commits — show review date
+        relTime = formatRelativeTime(myLastReview.date);
+        icon = EYE_ICON;
+        const stateLabel =
+          myLastReview.state === 'APPROVED' ? 'Approved'
+          : myLastReview.state === 'CHANGES_REQUESTED' ? 'Changes requested'
+          : 'Reviewed';
+        badgeClass =
+          myLastReview.state === 'APPROVED' ? 'pr-review-date--approved'
+          : myLastReview.state === 'CHANGES_REQUESTED' ? 'pr-review-date--changes'
+          : 'pr-review-date';
+        tooltip = `My review: ${stateLabel} (${new Date(myLastReview.date).toLocaleString()})`;
+      }
+    }
+
+    return `<span class="reviewer-separator">•</span><span class="pr-date-badge ${badgeClass} tooltipped tooltipped-s" aria-label="${tooltip}">${icon}${relTime}</span>`;
+  }
+
   // Format deployment badges HTML
   function formatDeploymentBadges(deployments) {
     if (!deployments || deployments.length === 0) {
@@ -292,8 +830,9 @@
   // - Pull request details: GET /repos/{owner}/{repo}/pulls/{prNumber}
   // - Pull request reviews: GET /repos/{owner}/{repo}/pulls/{prNumber}/reviews
   async function fetchReviewers(prNumber) {
-    const pullUrl = `https://api.github.com/repos/${repoInfo.owner}/${repoInfo.repo}/pulls/${prNumber}`;
-    const reviewsUrl = `${pullUrl}/reviews`;
+    const apiBase = getApiBaseUrl();
+    const pullUrl = `${apiBase}/repos/${repoInfo.owner}/${repoInfo.repo}/pulls/${prNumber}`;
+    const reviewsUrl = `${pullUrl}/reviews?per_page=100`;
 
     try {
       const headers = await getApiHeaders();
@@ -313,8 +852,16 @@
       const pullData = await pullResponse.json();
       const headSha = pullData.head?.sha;
 
-      // Fetch deployments in parallel with processing reviewers
+      // Fetch deployments, commit date, CI status, and branch protection rules in parallel
       const deploymentsPromise = headSha ? fetchDeployments(headSha) : Promise.resolve([]);
+      const commitDatePromise = headSha ? fetchCommitDate(headSha) : Promise.resolve(null);
+      const ciStatusPromise = headSha ? fetchCiStatus(headSha) : Promise.resolve({ checks: [] });
+      const branchProtectionPromise = fetchBranchProtection(pullData.base.ref);
+      const reviewThreadsPromise = fetchReviewThreads(prNumber);
+      // Merge state comes from the payload we already have; when GitHub has not computed it
+      // yet, expose a background retry promise that the caller resolves after first render.
+      const mergeState = parseMergeState(pullData);
+      const mergeStateRetry = mergeState ? null : retryMergeState(pullUrl, headers);
 
       // Extract requested reviewers (excluding bots)
       const requestedUsers = Array.isArray(pullData.requested_reviewers)
@@ -340,6 +887,43 @@
       let reviews = [];
       if (reviewsResponse.ok) {
         reviews = await reviewsResponse.json();
+      }
+
+      // Find the current authenticated user's most recent review
+      const currentUserLogin = getCurrentUserLogin();
+      const isAuthor = currentUserLogin && pullData.user?.login === currentUserLogin;
+      let myLastReview = null;
+      if (currentUserLogin && Array.isArray(reviews)) {
+        const myReviews = reviews.filter((r) =>
+          r &&
+          r.user?.login === currentUserLogin &&
+          r.state &&
+          r.state.toUpperCase() !== 'PENDING' &&
+          r.submitted_at,
+        );
+        if (myReviews.length > 0) {
+          myReviews.sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at));
+          const latest = myReviews[0];
+          myLastReview = { date: latest.submitted_at, state: latest.state.toUpperCase() };
+        }
+      }
+
+      // For the PR author: find the most recent review from anyone else
+      let latestReviewDate = null;
+      if (isAuthor && Array.isArray(reviews)) {
+        const othersReviews = reviews.filter((r) =>
+          r &&
+          r.user?.login !== currentUserLogin &&
+          r.state &&
+          r.state.toUpperCase() !== 'PENDING' &&
+          r.submitted_at &&
+          !isBot(r.user?.login),
+        );
+        if (othersReviews.length > 0) {
+          othersReviews.sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at));
+          const latest = othersReviews[0];
+          latestReviewDate = { date: latest.submitted_at, login: latest.user.login, state: latest.state.toUpperCase() };
+        }
       }
 
       // Extract users who have reviewed (exclude PR author and bots).
@@ -381,12 +965,70 @@
         }
       }
 
-      const deployments = await deploymentsPromise;
+      const [deployments, lastCommitDate, ciRaw, branchProtection, reviewThreads] = await Promise.all([
+        deploymentsPromise, commitDatePromise, ciStatusPromise, branchProtectionPromise, reviewThreadsPromise,
+      ]);
 
-      return { reviewers, deployments };
+      // Compute review approval status using required count from branch protection
+      const requiredApprovals = branchProtection?.requiredApprovals ?? null;
+      const pendingReviewerDetails = [
+        ...requestedUsers.map((r) => ({ login: r.login, isTeam: false, status: 'pending' })),
+        ...requestedTeams.map((r) => ({ login: r.login, isTeam: true, status: 'pending' })),
+      ];
+      const reviewedDetails = reviewedUsers.map((r) => ({
+        login: r.login,
+        isTeam: false,
+        status: r.state === 'APPROVED' ? 'approved'
+          : r.state === 'CHANGES_REQUESTED' ? 'changes'
+          : 'commented',
+      }));
+      const allReviewerDetails = [...pendingReviewerDetails, ...reviewedDetails];
+      const approvedCount = reviewedUsers.filter((r) => r.state === 'APPROVED').length;
+      const changesCount = reviewedUsers.filter((r) => r.state === 'CHANGES_REQUESTED').length;
+
+      let reviewStatus;
+      if (allReviewerDetails.length === 0) {
+        reviewStatus = { state: 'none' };
+      } else if (changesCount > 0) {
+        reviewStatus = { state: 'changes', approvedCount, requiredApprovals, reviewerDetails: allReviewerDetails };
+      } else if (requiredApprovals !== null
+        ? approvedCount >= requiredApprovals
+        : pendingReviewerDetails.length === 0 && approvedCount > 0) {
+        reviewStatus = { state: 'approved', approvedCount, requiredApprovals, reviewerDetails: allReviewerDetails };
+      } else {
+        reviewStatus = { state: 'pending', approvedCount, requiredApprovals, reviewerDetails: allReviewerDetails };
+      }
+
+      // Enrich CI checks with whether they are required per branch protection
+      const requiredCheckNames = new Set(branchProtection?.requiredChecks || []);
+      const hasProtectedChecks = requiredCheckNames.size > 0;
+      const ciStatus = {
+        checks: ciRaw.checks.map((c) => ({
+          ...c,
+          required: !hasProtectedChecks || requiredCheckNames.has(c.name),
+        })),
+      };
+
+      return { reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus, reviewThreads, mergeState, mergeStateRetry };
     } catch (error) {
       return { error: error.message || "Unknown error" };
     }
+  }
+
+  // Build the full HTML for a row from fetched data, honouring the display toggles.
+  function buildRowHtml({ reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus, reviewThreads, mergeState }) {
+    // Review + CI tags, the review-conversation tag and the conflicts tag share one container
+    const conflictsHtml = displayToggles.showConflicts ? formatConflictsTag(mergeState) : '';
+    const commentsHtml = displayToggles.showComments ? formatCommentsTag(reviewThreads) : '';
+    const tagsHtml = formatStatusTags(
+      displayToggles.showStatusTags ? reviewStatus : null,
+      displayToggles.showStatusTags ? ciStatus : null,
+      conflictsHtml + commentsHtml,
+    );
+    const datesInfoHtml = displayToggles.showDates ? formatDatesInfo(lastCommitDate, myLastReview, isAuthor, latestReviewDate) : '';
+    const deploymentBadgesHtml = displayToggles.showDeployments ? formatDeploymentBadges(deployments) : '';
+    const reviewersHtml = displayToggles.showReviewers ? formatReviewerAvatars(reviewers) : '';
+    return tagsHtml + datesInfoHtml + deploymentBadgesHtml + reviewersHtml;
   }
 
   function updateRow(row) {
@@ -415,7 +1057,7 @@
     const promise = fetchReviewers(prNumber);
     rowPromises.set(row, promise);
 
-    promise.then(({ reviewers, deployments, error }) => {
+    promise.then(({ reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus, reviewThreads, mergeState, mergeStateRetry, error }) => {
       if (rowPromises.get(row) !== promise) {
         return;
       }
@@ -430,10 +1072,21 @@
         return;
       }
 
-      const deploymentBadgesHtml = formatDeploymentBadges(deployments);
-      setSpanText(infoSpan, deploymentBadgesHtml + formatReviewerAvatars(reviewers), false);
+      const rowData = { reviewers, deployments, lastCommitDate, myLastReview, isAuthor, latestReviewDate, reviewStatus, ciStatus, reviewThreads, mergeState };
+      setSpanText(infoSpan, buildRowHtml(rowData), false);
       infoSpan.removeAttribute('title');
       rowReviewerData.set(row, reviewers);
+      rowFullData.set(row, rowData);
+
+      // Merge state not computed yet by GitHub: update the row once the background retry resolves
+      if (mergeStateRetry) {
+        mergeStateRetry.then((lateMergeState) => {
+          if (!lateMergeState || rowFullData.get(row) !== rowData) return; // row was re-fetched meanwhile
+          rowData.mergeState = lateMergeState;
+          const span = ensureInfoSpan(row);
+          if (span) setSpanText(span, buildRowHtml(rowData), false);
+        });
+      }
       let barChanged = false;
       for (const r of reviewers) {
         const key = r.isTeam ? `@${r.login}` : r.login;
@@ -454,6 +1107,7 @@
 
   function processRows(root = document) {
     const rows = root.querySelectorAll(ROW_SELECTOR);
+    log(`processRows: ${rows.length} row(s) matched "${ROW_SELECTOR}"`);
     rows.forEach((row) => {
       updateRow(row);
     });
@@ -498,7 +1152,11 @@
     filterBar = document.createElement("div");
     filterBar.className = "github-show-reviewer-filter pl-3";
     filterBar.style.display = "none";
-    firstRow.parentNode.insertBefore(filterBar, firstRow);
+    // The React list is a <ul> owned by React: anything inserted between its
+    // children gets dropped on re-render, so sit above the whole list.
+    const anchor =
+      firstRow.closest('[data-listview-component="items-list"]') || firstRow;
+    anchor.parentNode.insertBefore(filterBar, anchor);
 
     filterBar.addEventListener('click', (e) => {
       const el = e.target.closest('[aria-label]');
@@ -554,8 +1212,12 @@
       a.login.localeCompare(b.login, undefined, { sensitivity: "base" }),
     );
 
-    let htmlContent =
-      '<span class="reviewer-filter-label">Pending reviews by:</span>';
+    const fragment = document.createDocumentFragment();
+    const label = document.createElement('span');
+    label.className = 'reviewer-filter-label';
+    label.textContent = 'Pending reviews by:';
+    fragment.appendChild(label);
+
     let hasVisibleReviewers = false;
 
     for (const reviewer of sorted) {
@@ -570,22 +1232,29 @@
         activeFilter.login === reviewer.login &&
         activeFilter.isTeam === reviewer.isTeam;
 
+      const btn = document.createElement('button');
       if (reviewer.isTeam) {
-        htmlContent += `<button class="reviewer-filter-team tooltipped tooltipped-s${isActive ? " reviewer-filter-team--active" : ""}" aria-label="@${reviewer.login}">
-          ${TEAM_ICON}
-        </button>`;
+        btn.className = `reviewer-filter-team tooltipped tooltipped-s${isActive ? ' reviewer-filter-team--active' : ''}`;
+        btn.setAttribute('aria-label', `@${reviewer.login}`);
+        const svgDoc = new DOMParser().parseFromString(TEAM_ICON, 'image/svg+xml');
+        btn.appendChild(document.adoptNode(svgDoc.documentElement));
       } else {
         const avatarUrl =
           reviewer.avatarUrl ||
-          `https://github.com/${reviewer.login}.png?size=40`;
-        htmlContent += `<button class="reviewer-filter-avatar tooltipped tooltipped-s${isActive ? " reviewer-filter-avatar--active" : ""}" aria-label="${reviewer.login}">
-          <img src="${avatarUrl}" alt="${reviewer.login}" loading="lazy">
-        </button>`;
+          `${getWebBaseUrl()}/${reviewer.login}.png?size=40`;
+        btn.className = `reviewer-filter-avatar tooltipped tooltipped-s${isActive ? ' reviewer-filter-avatar--active' : ''}`;
+        btn.setAttribute('aria-label', reviewer.login);
+        const img = document.createElement('img');
+        img.src = avatarUrl;
+        img.alt = reviewer.login;
+        img.loading = 'lazy';
+        btn.appendChild(img);
       }
+      fragment.appendChild(btn);
     }
 
-    bar.innerHTML = htmlContent;
-    bar.style.display = hasVisibleReviewers ? 'flex' : 'none';
+    bar.replaceChildren(fragment);
+    bar.style.display = (hasVisibleReviewers && displayToggles.showFilterBar) ? 'flex' : 'none';
   }
 
   function toggleFilter(login, isTeam) {
@@ -611,6 +1280,7 @@
   // Initialize extension (re-run when URL changes)
   function initializeExtension() {
     const newRepoInfo = checkAndGetRepoInfo();
+    log("initializeExtension", window.location.href, newRepoInfo);
 
     if (!newRepoInfo) {
       if (observer) {
@@ -634,6 +1304,7 @@
       repoInfo.repo !== newRepoInfo.repo;
     if (switchedRepo) {
       rowPromises = new WeakMap();
+      rowFullData = new WeakMap();
       allReviewers.clear();
       activeFilter = null;
       applyFilter();
@@ -703,6 +1374,24 @@
 
   initializeExtension();
 
+  // Re-render all rows immediately when display toggles change in storage
+  browser.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'sync' || !changes.displayToggles) return;
+    displayToggles = { ...TOGGLE_DEFAULTS, ...(changes.displayToggles.newValue || {}) };
+
+    // Re-render all rows that already have fetched data
+    document.querySelectorAll(ROW_SELECTOR).forEach((row) => {
+      const data = rowFullData.get(row);
+      if (!data) return;
+      const infoSpan = ensureInfoSpan(row);
+      if (!infoSpan) return;
+      setSpanText(infoSpan, buildRowHtml(data), false);
+    });
+
+    // Re-render filter bar (handles showFilterBar toggle)
+    renderFilterBar();
+  });
+
   // Custom tooltip system
   let tooltip = null;
 
@@ -746,6 +1435,17 @@
       tooltip.classList.remove("visible");
     }
   }
-  
+
+  // Delegate custom multiline tooltip for status tags (uses data-tooltip attribute)
+  document.body.addEventListener('mouseenter', (e) => {
+    const el = e.target.closest('[data-tooltip]');
+    if (!el) return;
+    showTooltip(el, el.getAttribute('data-tooltip'));
+  }, true);
+  document.body.addEventListener('mouseleave', (e) => {
+    const el = e.target.closest('[data-tooltip]');
+    if (!el) return;
+    hideTooltip();
+  }, true);
 
 })();

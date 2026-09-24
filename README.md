@@ -16,6 +16,17 @@ A Firefox extension that displays reviewers directly in the GitHub Pull Request 
         - No border: Reviewer hasn't looked at PR, or has only commented
     - Displays "None" when no reviewers are assigned
     - Supports "Team" reviewers
+- Unresolved conversations badge
+    - Shows the number of unresolved review threads (inline comment conversations) on a PR
+        - Red with a count: the PR still has unresolved conversations
+        - Green check: every conversation has been resolved
+        - No badge: the PR has no review threads
+    - Hovering over the badge lists each thread with its file, author, and resolved / outdated state
+    - Requires a token (GitHub only exposes thread resolution through the GraphQL API)
+- Merge conflicts tag
+    - Red "Conflicts" tag when the PR branch cannot be merged into its base without conflicts
+    - Nothing is shown when the PR is mergeable
+    - GitHub computes mergeability lazily; the extension retries a couple of times when the state is not known yet
 - Deployment status pills
     - List the environments a PR has been or is currently deployed to
         - Green: The PR is currently deployed to this environment
@@ -28,7 +39,7 @@ A Firefox extension that displays reviewers directly in the GitHub Pull Request 
 ## Installation
 
 **For Developers:**
-1. Package the extension: `zip -r github-pr-enhancer.xpi *` (from extension directory)
+1. Package the extension: `web-ext --config=web-ext.config.mjs build --overwrite-dest` (from extension directory)
 2. upload to addons.mozilla.org
 
 **For users:**
