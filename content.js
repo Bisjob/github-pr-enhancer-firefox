@@ -246,7 +246,7 @@
 
     const avatarElements = visibleReviewers.map((reviewer) => {
       if (reviewer.isTeam) {
-        return `<span class="reviewer-team-badge tooltipped tooltipped-s" aria-label="@${reviewer.login}" data-login="${reviewer.login}" data-is-team="true">
+        return `<span class="reviewer-team-badge" aria-label="@${reviewer.login}" data-tooltip="${escapeAttr('@' + reviewer.login)}" data-login="${reviewer.login}" data-is-team="true">
           ${TEAM_ICON} <span class="team-name">@${reviewer.login}</span>
         </span>`;
       } else {
@@ -266,7 +266,7 @@
             : reviewer.state === "CHANGES_REQUESTED"
               ? " (changes requested)"
               : "";
-        return `<span class="reviewer-avatar-link${stateClass} tooltipped tooltipped-s" aria-label="${reviewer.login}${stateLabel}" data-login="${reviewer.login}" data-type="${reviewer.type}">
+        return `<span class="reviewer-avatar-link${stateClass}" aria-label="${reviewer.login}${stateLabel}" data-tooltip="${escapeAttr(reviewer.login + stateLabel)}" data-login="${reviewer.login}" data-type="${reviewer.type}">
           <img src="${avatarUrl}" alt="${reviewer.login}" class="reviewer-avatar" loading="lazy" />
         </span>`;
       }
@@ -274,10 +274,11 @@
 
     let overflowBadge = "";
     if (overflowCount > 0) {
-      overflowBadge = `<span class="reviewer-overflow-badge" title="${reviewers
+      const overflowTooltip = escapeAttr(reviewers
         .slice(MAX_VISIBLE)
         .map((r) => (r.isTeam ? "@" + r.login : r.login))
-        .join(", ")}">+${overflowCount}</span>`;
+        .join("\n"));
+      overflowBadge = `<span class="reviewer-overflow-badge" data-tooltip="${overflowTooltip}">+${overflowCount}</span>`;
     }
 
     return `<span class="reviewer-separator">•</span><span class="reviewer-avatars-container">${avatarElements.join("")}${overflowBadge}</span>`;
@@ -800,7 +801,7 @@
       }
     }
 
-    return `<span class="reviewer-separator">•</span><span class="pr-date-badge ${badgeClass} tooltipped tooltipped-s" aria-label="${tooltip}">${icon}${relTime}</span>`;
+    return `<span class="reviewer-separator">•</span><span class="pr-date-badge ${badgeClass}" data-tooltip="${escapeAttr(tooltip)}">${icon}${relTime}</span>`;
   }
 
   // Format deployment badges HTML
@@ -819,7 +820,7 @@
         tooltip = `${deployment.environment}: ${deployment.state} (${formatRelativeTime(deployment.deployedAt)})`;
       }
 
-      return `<span class="deployment-badge ${stateClass} tooltipped tooltipped-s" aria-label="${tooltip}">${abbrevName}</span>`;
+      return `<span class="deployment-badge ${stateClass}" data-tooltip="${escapeAttr(tooltip)}">${abbrevName}</span>`;
     });
 
     return `<span class="reviewer-separator">•</span><span class="deployment-badges-container">${badges.join('')}</span>`;
@@ -1167,19 +1168,6 @@
       toggleFilter(login, isTeam);
     });
 
-    filterBar.addEventListener('mouseenter', (e) => {
-      const el = e.target.closest('[aria-label]');
-      if (!el || !filterBar.contains(el)) return;
-      const text = el.getAttribute('aria-label');
-      if (text) showTooltip(el, text);
-    }, true);
-
-    filterBar.addEventListener('mouseleave', (e) => {
-      const el = e.target.closest('[aria-label]');
-      if (!el || !filterBar.contains(el)) return;
-      hideTooltip();
-    }, true);
-
     return filterBar;
   }
 
@@ -1234,16 +1222,18 @@
 
       const btn = document.createElement('button');
       if (reviewer.isTeam) {
-        btn.className = `reviewer-filter-team tooltipped tooltipped-s${isActive ? ' reviewer-filter-team--active' : ''}`;
+        btn.className = `reviewer-filter-team${isActive ? ' reviewer-filter-team--active' : ''}`;
         btn.setAttribute('aria-label', `@${reviewer.login}`);
+        btn.dataset.tooltip = `@${reviewer.login}`;
         const svgDoc = new DOMParser().parseFromString(TEAM_ICON, 'image/svg+xml');
         btn.appendChild(document.adoptNode(svgDoc.documentElement));
       } else {
         const avatarUrl =
           reviewer.avatarUrl ||
           `${getWebBaseUrl()}/${reviewer.login}.png?size=40`;
-        btn.className = `reviewer-filter-avatar tooltipped tooltipped-s${isActive ? ' reviewer-filter-avatar--active' : ''}`;
+        btn.className = `reviewer-filter-avatar${isActive ? ' reviewer-filter-avatar--active' : ''}`;
         btn.setAttribute('aria-label', reviewer.login);
+        btn.dataset.tooltip = reviewer.login;
         const img = document.createElement('img');
         img.src = avatarUrl;
         img.alt = reviewer.login;
@@ -1399,19 +1389,36 @@
     if (tooltip) return tooltip;
     tooltip = document.createElement("div");
     tooltip.className = "github-show-reviewer-tooltip";
-    document.body.appendChild(tooltip);
+    // Render in the top layer: the PR list is laid out in scroll containers
+    // that clip absolutely positioned descendants, and no z-index escapes an
+    // overflow clip. "manual" means we control show/hide ourselves.
+    tooltip.setAttribute("popover", "manual");
+    document.documentElement.appendChild(tooltip);
     return tooltip;
+  }
+
+  function openTooltip(tooltip) {
+    try {
+      if (!tooltip.matches(":popover-open")) {
+        tooltip.showPopover();
+      }
+    } catch (error) {
+      // Popover unsupported: the element stays in normal flow, still fixed.
+    }
   }
 
   function showTooltip(element, text) {
     const tooltip = createTooltip();
     tooltip.textContent = text;
-    tooltip.classList.add("visible");
+    // Lay it out (hidden) before measuring, so the first hover is placed right.
+    tooltip.classList.remove("visible");
+    openTooltip(tooltip);
 
     const rect = element.getBoundingClientRect();
     const tooltipRect = tooltip.getBoundingClientRect();
 
-    // Position tooltip above the element
+    // Position tooltip above the element. The tooltip is position: fixed, so
+    // these are viewport coordinates and no scroll offset applies.
     let top = rect.top - tooltipRect.height - 8;
     let left = rect.left + (rect.width / 2) - (tooltipRect.width / 2);
 
@@ -1426,17 +1433,26 @@
       left = window.innerWidth - tooltipRect.width - 8;
     }
 
-    tooltip.style.top = `${top + window.scrollY}px`;
-    tooltip.style.left = `${left + window.scrollX}px`;
+    tooltip.style.top = `${top}px`;
+    tooltip.style.left = `${left}px`;
+    tooltip.classList.add("visible");
   }
 
   function hideTooltip() {
-    if (tooltip) {
-      tooltip.classList.remove("visible");
+    if (!tooltip) return;
+    tooltip.classList.remove("visible");
+    try {
+      if (tooltip.matches(":popover-open")) {
+        tooltip.hidePopover();
+      }
+    } catch (error) {
+      // Popover unsupported: the "visible" class already hid it.
     }
   }
 
-  // Delegate custom multiline tooltip for status tags (uses data-tooltip attribute)
+  // Delegate the custom multiline tooltip for everything we render (badges,
+  // avatars, status tags, filter bar), via the data-tooltip attribute. GitHub's
+  // CSS "tooltipped" pseudo-elements are clipped by the row, so don't use them.
   document.body.addEventListener('mouseenter', (e) => {
     const el = e.target.closest('[data-tooltip]');
     if (!el) return;
@@ -1445,6 +1461,8 @@
   document.body.addEventListener('mouseleave', (e) => {
     const el = e.target.closest('[data-tooltip]');
     if (!el) return;
+    // Moving from a child (icon, img) back onto the element is not leaving it.
+    if (e.relatedTarget && el.contains(e.relatedTarget)) return;
     hideTooltip();
   }, true);
 

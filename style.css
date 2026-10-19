@@ -192,7 +192,11 @@
 
 /* Custom tooltip system */
 .github-show-reviewer-tooltip {
-  position: absolute;
+  /* Shown in the top layer via the popover API, so it is never clipped by the
+     scroll containers of the PR list. Reset the UA popover centering. */
+  position: fixed;
+  inset: auto;
+  margin: 0;
   z-index: 1000000;
   background: var(--bgColor-emphasis, var(--color-neutral-emphasis-plus));
   color: var(--color-tooltip-fg, #f0f6fc);
